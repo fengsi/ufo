@@ -1,0 +1,23 @@
+# OS / editor
+.DS_Store
+.idea/
+
+# Node / Next.js
+node_modules/
+apps/web/.next/
+apps/web/out/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+# Go
+apps/api/bin/
+apps/api/tmp/
+
+# Rust
+apps/rover/target/
+apps/rover/missions/
+
+# Local rover state
+.ufo/

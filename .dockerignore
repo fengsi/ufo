@@ -1,0 +1,11 @@
+# Keep build contexts small and fast.
+.git
+.idea
+**/node_modules
+**/target
+**/.next
+**/*.tsbuildinfo
+*.html
+.env
+.env.*
+!.env.example

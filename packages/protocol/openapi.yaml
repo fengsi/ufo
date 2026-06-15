@@ -1,0 +1,1731 @@
+openapi: 3.0.3
+info:
+  title: UFO Control-Plane API
+  version: 0.1.0
+  license:
+    name: BSD-3-Clause
+    url: https://opensource.org/license/bsd-3-clause
+  description: >
+    Preview control-plane HTTP API for UFO (Unified Fleet Orchestrator), with no
+    compatibility guarantee. Endpoints and payloads may change without notice.
+    Three surfaces: auth (public), the tenant/UI surface (cookie session +
+    ?fleet=<fleet id>), and the rover surface (per-rover connection token). Source
+    of truth for the protocol; maintained by hand alongside the code (generated
+    clients are a follow-up).
+
+servers:
+  - url: http://localhost:8080
+
+security: []
+
+tags:
+  - name: auth
+    description: Accounts & sessions (public)
+  - name: ui
+    description: Tenant surface — session cookie + ?fleet=<fleet id>
+  - name: rover
+    description: Rover surface — per-rover connection token
+
+paths:
+  /healthz:
+    get:
+      tags: [ui]
+      operationId: healthCheck
+      summary: Liveness check
+      responses:
+        "200": { description: OK }
+
+  /api/auth/signup:
+    post:
+      tags: [auth]
+      operationId: signup
+      summary: Create an account (auto-creates a fleet and membership) and a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignupRequest" }
+      responses:
+        "201":
+          description: Created (sets ufo_session cookie)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Start a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: OK (sets ufo_session cookie)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: End the current session
+      responses:
+        "204": { description: Logged out }
+
+  /api/me:
+    get:
+      tags: [ui]
+      operationId: me
+      summary: The current user
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/fleets:
+    get:
+      tags: [ui]
+      operationId: listFleets
+      summary: Fleets the current user belongs to
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Fleet" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [ui]
+      operationId: createFleet
+      summary: Create a group fleet (invitable/manageable), owned by the caller
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Fleet" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/fleets/{id}:
+    delete:
+      tags: [ui]
+      operationId: deleteFleet
+      summary: Delete a group fleet (owner only; personal fleets can't be deleted)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rovers:
+    get:
+      tags: [ui]
+      operationId: listRovers
+      summary: Rovers in a fleet with presence status
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Rover" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/rovers/{id}/tags:
+    post:
+      tags: [ui]
+      operationId: setRoverTags
+      summary: Set a rover's user dispatch tags (manager only; auto-tags untouched)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { tags: { type: array, items: { type: string } } }
+      responses:
+        "204": { description: Updated }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/rovers/{id}:
+    delete:
+      tags: [ui]
+      operationId: deleteRover
+      summary: Revoke a rover (its connection token stops working)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/enrollment-codes:
+    get:
+      tags: [ui]
+      operationId: listEnrollmentCodes
+      summary: Enrollment codes for a fleet
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/EnrollmentCode" } }
+    post:
+      tags: [ui]
+      operationId: createEnrollmentCode
+      summary: Create an enrollment code (one-time, or reusable with expiry ≤ 1y)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEnrollmentCodeRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollmentCode" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/enrollment-codes/{id}:
+    delete:
+      tags: [ui]
+      operationId: deleteEnrollmentCode
+      summary: Revoke an enrollment code
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/rover/enroll:
+    post:
+      tags: [rover]
+      operationId: enroll
+      summary: Exchange an enrollment code (bearer) for a per-rover connection token
+      security: [{ enrollmentCode: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnrollRequest" }
+      responses:
+        "201":
+          description: Enrolled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/operations:
+    post:
+      tags: [ui]
+      operationId: createOperation
+      summary: Create an operation, applying the auto-exec policy
+      description: >
+        Creates an operation. If the assignee resolves to a pilot (or a crew
+        with ≥1 pilot) a run is auto-dispatched and the operation is
+        `in_progress`; a human-only (or empty) assignee leaves it in `backlog`.
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOperationRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    get:
+      tags: [ui]
+      operationId: listOperations
+      summary: One board column, keyset-paginated
+      description: >
+        With `status`, returns that column newest-first, keyset-paginated by
+        `before` (id; 0/omitted = newest) and `limit` (default 50, max 200),
+        optionally scoped to a `mission` (0/omitted = all). Without `status`,
+        returns a bounded newest page across statuses.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Fleet" }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: mission, in: query, schema: { type: string, format: uuid } }
+        - { name: before, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: priority, in: query, schema: { type: integer }, description: 0–4 }
+        - { name: assignee_kind, in: query, schema: { type: string, enum: [user, pilot, crew] } }
+        - { name: assignee, in: query, schema: { type: string, format: uuid }, description: specific user/pilot/crew }
+        - { name: creator, in: query, schema: { type: string, format: uuid } }
+        - { name: label, in: query, schema: { type: string, format: uuid } }
+        - { name: archived, in: query, schema: { type: string, enum: ["1"] }, description: 1 = include archived (default hidden) }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Operation" } }
+
+  /api/operations/counts:
+    get:
+      tags: [ui]
+      operationId: countOperations
+      summary: Per-status operation counts (optionally scoped to a mission + filters)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Fleet" }
+        - { name: mission, in: query, schema: { type: string, format: uuid } }
+        - { name: priority, in: query, schema: { type: integer } }
+        - { name: assignee_kind, in: query, schema: { type: string, enum: [user, pilot, crew] } }
+        - { name: assignee, in: query, schema: { type: string, format: uuid } }
+        - { name: creator, in: query, schema: { type: string, format: uuid } }
+        - { name: label, in: query, schema: { type: string, format: uuid } }
+        - { name: archived, in: query, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200":
+          description: status → count
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: { type: integer, format: int64 } }
+
+  /api/operations/working:
+    get:
+      tags: [ui]
+      operationId: workingCount
+      summary: Count of operations with an in-flight run (board "N working" pill)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { count: { type: integer, format: int64 } } }
+
+  /api/operations/{id}:
+    get:
+      tags: [ui]
+      operationId: getOperation
+      summary: An operation with its comment thread and runs
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperationDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/operations/{id}/assign:
+    post:
+      tags: [ui]
+      operationId: assignOperation
+      summary: Reassign an operation (re-applies the auto-exec policy)
+      description: >
+        Sets the assignee. If it resolves to a pilot (or a crew with ≥1 pilot)
+        the operation auto-dispatches a run and becomes
+        `in_progress`; a human-only assignee leaves it in `backlog`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssignRequest" }
+      responses:
+        "200":
+          description: Updated operation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/operations/{id}/status:
+    post:
+      tags: [ui]
+      operationId: setOperationStatus
+      summary: Set an operation's board status (kanban drag)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusRequest" }
+      responses:
+        "200":
+          description: Updated operation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/operations/{id}/run:
+    post:
+      tags: [ui]
+      operationId: runOperation
+      summary: Re-dispatch a run to the operation's assigned pilot
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "202": { description: Run queued }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/operations/{id}/tags:
+    post:
+      tags: [ui]
+      operationId: setOperationTags
+      summary: Set an operation's dispatch allow/deny tag lists
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                required_tags: { type: array, items: { type: string } }
+                excluded_tags: { type: array, items: { type: string } }
+      responses:
+        "204": { description: Updated }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/operations/{id}/priority:
+    post:
+      tags: [ui]
+      operationId: setOperationPriority
+      summary: Set operation priority (0 none → 4 urgent)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { priority: { type: integer, minimum: 0, maximum: 4 } } } } }
+      responses:
+        "204": { description: Updated }
+
+  /api/operations/{id}/dates:
+    post:
+      tags: [ui]
+      operationId: setOperationDates
+      summary: Set operation start/due dates (YYYY-MM-DD or null)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { start_date: { type: string, format: date, nullable: true }, due_date: { type: string, format: date, nullable: true } } } } }
+      responses:
+        "204": { description: Updated }
+
+  /api/operations/{id}/parent:
+    post:
+      tags: [ui]
+      operationId: setOperationParent
+      summary: Set/clear an operation's parent (sub-operation)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { parent_id: { type: string, format: uuid, nullable: true } } } } }
+      responses:
+        "204": { description: Updated }
+
+  /api/operations/{id}/archive:
+    post:
+      tags: [ui]
+      operationId: setOperationArchived
+      summary: Archive or unarchive an operation
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [archived], properties: { archived: { type: boolean } } } } }
+      responses:
+        "204": { description: Updated }
+
+  /api/operations/{id}/labels:
+    post:
+      tags: [ui]
+      operationId: attachLabel
+      summary: Attach a label to an operation
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { label: { type: string, format: uuid } } } } }
+      responses:
+        "204": { description: Attached }
+    delete:
+      tags: [ui]
+      operationId: detachLabel
+      summary: Detach a label (?label=<label-id>)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Fleet" }
+        - { name: label, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Detached }
+
+  /api/operations/{id}/prs:
+    post:
+      tags: [ui]
+      operationId: addPullRequest
+      summary: Link a pull request to an operation (manual)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [url], properties: { url: { type: string }, title: { type: string }, number: { type: integer } } } } }
+      responses:
+        "201":
+          description: Linked
+          content: { application/json: { schema: { $ref: "#/components/schemas/PullRequest" } } }
+
+  /api/prs/{id}:
+    delete:
+      tags: [ui]
+      operationId: deletePullRequest
+      summary: Unlink a pull request
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "204": { description: Unlinked }
+
+  /api/operations/{id}/relations:
+    post:
+      tags: [ui]
+      operationId: addRelation
+      summary: Link this operation to another (blocks / blocked_by / relates / duplicate / duplicated_by)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, target]
+              properties:
+                kind: { type: string, enum: [blocks, blocked_by, relates, duplicate, duplicated_by] }
+                target: { type: string, format: uuid, description: other operation public id }
+      responses:
+        "204": { description: Linked }
+
+  /api/relations/{id}:
+    delete:
+      tags: [ui]
+      operationId: deleteRelation
+      summary: Remove an operation relationship
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "204": { description: Removed }
+
+  /api/operations/search:
+    get:
+      tags: [ui]
+      operationId: searchOperations
+      summary: Typeahead search for operations (link picker)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Fleet" }
+        - { name: q, in: query, schema: { type: string }, description: title substring or numeric seq }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/OperationRef" } } } }
+
+  /api/labels:
+    get:
+      tags: [ui]
+      operationId: listLabels
+      summary: Labels in the fleet
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Label" } } } } }
+    post:
+      tags: [ui]
+      operationId: createLabel
+      summary: Create a label
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string }, color: { type: string } } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Label" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/labels/{id}:
+    delete:
+      tags: [ui]
+      operationId: deleteLabel
+      summary: Delete a label
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "204": { description: Deleted }
+
+  /api/operations/{id}/reactions:
+    post:
+      tags: [ui]
+      operationId: toggleOpReaction
+      summary: Toggle an emoji reaction on an operation (its body)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [emoji], properties: { emoji: { type: string } } } } }
+      responses:
+        "204": { description: Toggled }
+
+  /api/comments/{id}/reactions:
+    post:
+      tags: [ui]
+      operationId: toggleReaction
+      summary: Toggle an emoji reaction on a comment
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [emoji], properties: { emoji: { type: string } } } } }
+      responses:
+        "204": { description: Toggled }
+
+  /api/operations/{id}/comments:
+    get:
+      tags: [ui]
+      operationId: listComments
+      summary: List an operation's comment thread
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Comment" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [ui]
+      operationId: postComment
+      summary: Post a comment on an operation
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PostCommentRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/pilots:
+    get:
+      tags: [ui]
+      operationId: listPilots
+      summary: List pilots in the fleet
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Pilot" } }
+    post:
+      tags: [ui]
+      operationId: createPilot
+      summary: Create a pilot
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePilotRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pilot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/pilots/{id}:
+    delete:
+      tags: [ui]
+      operationId: deletePilot
+      summary: Delete a pilot
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Deleted }
+
+  /api/crews:
+    get:
+      tags: [ui]
+      operationId: listCrews
+      summary: List crews (teams of pilots + humans) with members
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Crew" } }
+    post:
+      tags: [ui]
+      operationId: createCrew
+      summary: Create a crew
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCrewRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Crew" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/crews/{id}:
+    delete:
+      tags: [ui]
+      operationId: deleteCrew
+      summary: Delete a crew
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Deleted }
+
+  /api/crews/{id}/members:
+    post:
+      tags: [ui]
+      operationId: addCrewMember
+      summary: Add (or update the role of) a crew member
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CrewMemberRequest" }
+      responses:
+        "204": { description: Added }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [ui]
+      operationId: removeCrewMember
+      summary: Remove a crew member
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+        - { name: member_type, in: query, required: true, schema: { type: string, enum: [pilot, user] } }
+        - { name: member_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Removed }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/runs:
+    get:
+      tags: [ui]
+      operationId: listRuns
+      summary: List runs in the fleet
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Run" } }
+
+  /api/runs/{id}:
+    get:
+      tags: [ui]
+      operationId: getRun
+      summary: A run with its events and artifacts
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/missions:
+    get:
+      tags: [ui]
+      operationId: listMissions
+      summary: List missions (fleet-scoped operation groupings)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Mission" } }
+    post:
+      tags: [ui]
+      operationId: createMission
+      summary: Create a mission with a key used to prefix operation codes
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMissionRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Mission" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/missions/counts:
+    get:
+      tags: [ui]
+      operationId: missionCounts
+      summary: Per-mission operation counts (keyed by mission id)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: mission id → count
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: { type: integer, format: int64 } }
+
+  /api/missions/{id}:
+    post:
+      tags: [ui]
+      operationId: updateMission
+      summary: Rename a mission and/or its key
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMissionRequest" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Mission" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/signals:
+    get:
+      tags: [ui]
+      operationId: listSignals
+      summary: The current user's (non-archived) signals in the fleet
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK (unread first, newest first)
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Signal" } }
+
+  /api/signals/{id}/read:
+    post:
+      tags: [ui]
+      operationId: markSignalRead
+      summary: Mark a signal read
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Marked read }
+
+  /api/signals/{id}/archive:
+    post:
+      tags: [ui]
+      operationId: archiveSignal
+      summary: Archive a signal
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Archived }
+
+  /api/ws:
+    get:
+      tags: [ui]
+      operationId: ws
+      summary: WebSocket stream of typed change events for the fleet
+      description: >
+        WebSocket upgrade (cookie-authed, fleet membership checked). The server
+        pushes typed JSON frames `{"t":"operation"|"run"|"run_message"|"comment"|
+        "signal"|"rover"}` whenever that slice changes in the fleet, so the client
+        revalidates only the affected data. Auto-reconnect + resync is the
+        client's responsibility. (Sourced from PostgreSQL LISTEN/NOTIFY, so it works
+        across API instances.)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "101": { description: Switching Protocols (WebSocket) }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/members:
+    get:
+      tags: [ui]
+      operationId: listMembers
+      summary: Human members of the fleet
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Member" } }
+
+  /api/members/{id}/role:
+    post:
+      tags: [ui]
+      operationId: updateMemberRole
+      summary: Change a member's role (owner only)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties: { role: { type: string, enum: [owner, admin, member] } }
+      responses:
+        "204": { description: Updated }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/members/{id}:
+    delete:
+      tags: [ui]
+      operationId: removeMember
+      summary: Remove a member from the fleet (manager only; cannot remove an owner)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/invitations:
+    get:
+      tags: [ui]
+      operationId: listInvitations
+      summary: Pending invitations for the fleet (manager only)
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Invitation" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [ui]
+      operationId: createInvitation
+      summary: Invite a teammate by email (manager only)
+      description: >
+        Matched on the email the invitee registers with; no email is sent.
+        409 if the email is already a member or already has a pending invitation.
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/Fleet" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                role: { type: string, enum: [admin, member], default: member }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invitation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: Already a member or already invited }
+
+  /api/invitations/mine:
+    get:
+      tags: [ui]
+      operationId: myInvitations
+      summary: Pending invitations addressed to the signed-in user
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/MyInvite" } }
+
+  /api/invitations/{id}:
+    delete:
+      tags: [ui]
+      operationId: revokeInvitation
+      summary: Revoke a pending invitation (manager only)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Fleet" }
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/invitations/{id}/accept:
+    post:
+      tags: [ui]
+      operationId: acceptInvitation
+      summary: Accept an invitation addressed to the signed-in user
+      description: Verifies the email matches, the invitation is pending and not expired, then joins the fleet.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Joined
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { fleet_id: { type: string, format: uuid } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "410": { description: Invitation expired }
+
+  /api/invitations/{id}/decline:
+    post:
+      tags: [ui]
+      operationId: declineInvitation
+      summary: Decline an invitation addressed to the signed-in user
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Declined }
+
+  /api/rover/me:
+    delete:
+      tags: [rover]
+      operationId: deregisterRover
+      summary: Deregister the calling rover (connection-token auth; used by `rover remove`)
+      security: [{ roverConnectionToken: [] }]
+      responses:
+        "204": { description: Deregistered }
+
+  /api/rover/tags:
+    post:
+      tags: [rover]
+      operationId: refreshRoverTags
+      summary: Refresh the rover's auto-detected tags (on start); user tags untouched
+      security: [{ roverConnectionToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { tags: { type: array, items: { type: string } } }
+      responses:
+        "204": { description: Updated }
+
+  /api/rover/runs/claim:
+    post:
+      tags: [rover]
+      operationId: claimRun
+      summary: Long-poll claim the oldest queued run in the rover's fleet
+      security: [{ roverConnectionToken: [] }]
+      responses:
+        "200":
+          description: A run was claimed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClaimedRun" }
+        "204": { description: No queued runs before the long-poll deadline }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/rover/runs/{id}/state:
+    post:
+      tags: [rover]
+      operationId: setRunState
+      summary: Set a run's state
+      security: [{ roverConnectionToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetStateRequest" }
+      responses:
+        "200":
+          description: Updated run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rover/runs/{id}/heartbeat:
+    post:
+      tags: [rover]
+      operationId: heartbeat
+      summary: Renew a run's lease
+      security: [{ roverConnectionToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204": { description: Lease renewed }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/rover/runs/{id}/events:
+    post:
+      tags: [rover]
+      operationId: appendRunEvent
+      summary: Append an event to a run's timeline
+      security: [{ roverConnectionToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppendEventRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/rover/runs/{id}/artifacts:
+    post:
+      tags: [rover]
+      operationId: appendArtifact
+      summary: Attach an artifact (e.g. a git diff) to a run
+      security: [{ roverConnectionToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppendArtifactRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Artifact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/rover/runs/{id}/messages:
+    post:
+      tags: [rover]
+      operationId: appendRunMessage
+      summary: Append a typed transcript message (pilot telemetry) to a run
+      security: [{ roverConnectionToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunMessageRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/rover/runs/{id}/result:
+    post:
+      tags: [rover]
+      operationId: runResult
+      summary: Record the pilot session + post its final message as a comment
+      description: >
+        Stores the resumable session id on the run and its operation (so a human
+        reply resumes it) and, if message is non-empty, posts it as a pilot
+        comment on the operation.
+      security: [{ roverConnectionToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunResultRequest" }
+      responses:
+        "204": { description: Recorded }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: ufo_session
+    enrollmentCode:
+      type: http
+      scheme: bearer
+      description: Enrollment code from the Rovers panel; exchanged once for a connection token.
+    roverConnectionToken:
+      type: http
+      scheme: bearer
+      description: Per-rover connection token returned by enrollment.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Public resource id.
+      schema: { type: string, format: uuid }
+    Fleet:
+      name: fleet
+      in: query
+      required: true
+      description: Active fleet id (membership enforced).
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: Not authenticated
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: Not a member of the fleet
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: Not found
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Conflict:
+      description: Already exists
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Error:
+      type: object
+      properties: { error: { type: string } }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string }
+
+    Fleet:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [personal, group], description: personal fleets can't be invited to/deleted }
+
+    Rover:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [online, busy, offline] }
+        tags: { type: array, items: { type: string }, description: user-set dispatch tags }
+        auto_tags: { type: array, items: { type: string }, description: "rover-detected (pilot:*, os:*, arch:*)" }
+        last_seen_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    EnrollmentCode:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        fleet_id: { type: string, format: uuid }
+        code: { type: string }
+        label: { type: string }
+        reusable: { type: boolean }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    CreateEnrollmentCodeRequest:
+      type: object
+      properties:
+        label: { type: string }
+        reusable: { type: boolean, default: false }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Required when reusable=true; must be ≤ 1 year out.
+
+    EnrollRequest:
+      type: object
+      properties:
+        name: { type: string, description: Rover name (defaults to hostname) }
+        tags: { type: array, items: { type: string }, description: user dispatch tags }
+        auto_tags: { type: array, items: { type: string }, description: rover-detected tags }
+
+    EnrollResponse:
+      type: object
+      properties:
+        token: { type: string, description: The per-rover connection token }
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    Operation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        status: { type: string, enum: [backlog, todo, in_progress, in_review, done, blocked, cancelled] }
+        mission_id: { type: string, format: uuid, description: The mission this operation belongs to (required) }
+        seq: { type: integer, description: Per-mission running number; displayed as <mission.key>-<seq> }
+        assignee_type: { type: string, enum: [pilot, user, crew], nullable: true }
+        assignee_id: { type: string, format: uuid, nullable: true, description: Referenced user/pilot/crew public id }
+        priority: { type: integer, description: 0 none → 4 urgent }
+        required_tags: { type: array, items: { type: string }, description: dispatch allow list (rover must have all) }
+        excluded_tags: { type: array, items: { type: string }, description: dispatch deny list (rover must have none; deny wins) }
+        labels: { type: array, items: { $ref: "#/components/schemas/Label" } }
+        reactions: { type: array, items: { $ref: "#/components/schemas/Reaction" }, description: only populated in the detail view }
+        sub: { type: object, properties: { total: { type: integer }, done: { type: integer } }, description: sub-operation progress }
+        start_date: { type: string, nullable: true }
+        due_date: { type: string, nullable: true }
+        parent_id: { type: string, format: uuid, nullable: true }
+        created_by: { type: string, format: uuid, nullable: true }
+        archived: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Label:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        color: { type: string }
+
+    PullRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        title: { type: string }
+        state: { type: string }
+        number: { type: integer, nullable: true }
+
+    OperationRef:
+      type: object
+      description: Compact operation reference (relations, search) — enough to render a code and status.
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        status: { type: string }
+        seq: { type: integer }
+        mission_id: { type: string, format: uuid }
+
+    Relation:
+      type: object
+      description: A directed link to another operation, shown from this operation's side.
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [blocks, blocked_by, relates, duplicate, duplicated_by] }
+        operation: { $ref: "#/components/schemas/OperationRef" }
+
+    Pilot:
+      type: object
+      description: A named automated pilot bound to a kind; pilots drive rovers, human users do not.
+      properties:
+        id: { type: string, format: uuid }
+        fleet_id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [claude, codex], description: Kind identifier. }
+        created_at: { type: string, format: date-time }
+
+    Crew:
+      type: object
+      description: A team of pilots and/or humans an operation can be assigned to.
+      properties:
+        id: { type: string, format: uuid }
+        fleet_id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        members: { type: array, items: { $ref: "#/components/schemas/CrewMember" } }
+
+    CrewMember:
+      type: object
+      properties:
+        crew_id: { type: string, format: uuid }
+        member_type: { type: string, enum: [pilot, user] }
+        member_id: { type: string, format: uuid }
+        role: { type: string, enum: [leader, member] }
+
+    Member:
+      type: object
+      description: A human member of the fleet.
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { type: string, enum: [owner, admin, member] }
+
+    Invitation:
+      type: object
+      description: A pending invitation to join the fleet (matched by email; no email is sent).
+      properties:
+        id: { type: string, format: uuid }
+        invitee_email: { type: string, format: email }
+        role: { type: string, enum: [admin, member] }
+        status: { type: string, enum: [pending, accepted, declined, expired] }
+        expires_at: { type: string, format: date-time }
+
+    MyInvite:
+      type: object
+      description: An invitation addressed to the signed-in user, with the inviting fleet's name.
+      properties:
+        id: { type: string, format: uuid }
+        fleet_id: { type: string, format: uuid }
+        fleet_name: { type: string }
+        role: { type: string, enum: [admin, member] }
+        invitee_email: { type: string, format: email }
+
+    Comment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        author_type: { type: string, enum: [user, pilot, system] }
+        author_id: { type: string, format: uuid, nullable: true }
+        body: { type: string }
+        reactions: { type: array, items: { $ref: "#/components/schemas/Reaction" } }
+        created_at: { type: string, format: date-time }
+
+    Reaction:
+      type: object
+      properties:
+        emoji: { type: string }
+        count: { type: integer }
+        mine: { type: boolean }
+        users: { type: array, items: { type: string }, description: reactors oldest-first (hover tooltip) }
+
+    Signal:
+      type: object
+      description: An action signal for a human (e.g. a pilot delivered work to review).
+      properties:
+        id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid, nullable: true }
+        type: { type: string, example: review_requested, description: "e.g. review_requested, input_requested, task_failed" }
+        severity: { type: string, enum: [action_required, attention, info] }
+        title: { type: string }
+        body: { type: string }
+        read: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Mission:
+      type: object
+      description: A grouping of operations within a fleet, with a fleet-unique operation-prefix key.
+      properties:
+        id: { type: string, format: uuid }
+        fleet_id: { type: string, format: uuid }
+        name: { type: string }
+        key: { type: string, description: Operation prefix (e.g. MSJ -> MSJ-123); unique within the fleet }
+        created_at: { type: string, format: date-time }
+
+    CreateMissionRequest:
+      type: object
+      required: [name, key]
+      properties:
+        name: { type: string }
+        key: { type: string, description: Operation prefix (alphanumeric; unique within the fleet) }
+
+    Run:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        pilot: { type: string, enum: [claude, codex] }
+        needs_input: { type: boolean, description: pilot ended this run awaiting a human answer }
+        state:
+          type: string
+          enum: [queued, claimed, starting, running, blocked, succeeded, failed, canceled]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RunEvent:
+      type: object
+      description: Events are ordered by ascending id.
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        kind: { type: string }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Artifact:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        kind: { type: string, example: diff }
+        name: { type: string, example: git.diff }
+        content: { type: string }
+        created_at: { type: string, format: date-time }
+
+    OperationDetail:
+      type: object
+      properties:
+        operation: { $ref: "#/components/schemas/Operation" }
+        comments: { type: array, items: { $ref: "#/components/schemas/Comment" } }
+        runs: { type: array, items: { $ref: "#/components/schemas/Run" } }
+        children: { type: array, items: { $ref: "#/components/schemas/Operation" } }
+        pull_requests: { type: array, items: { $ref: "#/components/schemas/PullRequest" } }
+        relations: { type: array, items: { $ref: "#/components/schemas/Relation" } }
+
+    RunDetail:
+      type: object
+      properties:
+        run: { $ref: "#/components/schemas/Run" }
+        events: { type: array, items: { $ref: "#/components/schemas/RunEvent" } }
+        artifacts: { type: array, items: { $ref: "#/components/schemas/Artifact" } }
+        messages: { type: array, items: { $ref: "#/components/schemas/RunMessage" } }
+
+    RunMessage:
+      type: object
+      description: One typed transcript entry (pilot telemetry) for a run.
+      properties:
+        id: { type: string, format: uuid }
+        seq: { type: integer }
+        type: { type: string, enum: [text, thinking, tool_use, tool_result, error] }
+        tool: { type: string }
+        content: { type: string }
+        input: { type: object, additionalProperties: true, nullable: true }
+        output: { type: string }
+        created_at: { type: string, format: date-time }
+
+    RunMessageRequest:
+      type: object
+      required: [seq, type]
+      properties:
+        seq: { type: integer }
+        type: { type: string, enum: [text, thinking, tool_use, tool_result, error] }
+        tool: { type: string }
+        content: { type: string }
+        input: { type: object, additionalProperties: true }
+        output: { type: string }
+
+    ClaimedRun:
+      type: object
+      description: Rover-facing view of a claimed run.
+      properties:
+        id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        state: { type: string }
+        pilot: { type: string, enum: [claude, codex] }
+        command: { type: string, description: "Resume prompt carried to the pilot, if any" }
+        prompt: { type: string, description: First run = operation title+body; resume run = the human reply }
+        session_id: { type: string, description: Non-empty → resume this pilot session }
+
+    SignupRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string, minLength: 8 }
+        name: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string }
+
+    CreateOperationRequest:
+      type: object
+      required: [title, mission_id]
+      properties:
+        title: { type: string }
+        body: { type: string, description: The operation's prompt for the assigned pilot }
+        mission_id: { type: string, format: uuid, description: Required — every operation belongs to a mission }
+        assignee_type: { type: string, enum: [pilot, user, crew], nullable: true }
+        assignee_id: { type: string, format: uuid, nullable: true }
+        required_tags: { type: array, items: { type: string } }
+        excluded_tags: { type: array, items: { type: string } }
+        priority: { type: integer, minimum: 0, maximum: 4 }
+        parent_id: { type: string, format: uuid, nullable: true }
+        start_date: { type: string, format: date, nullable: true }
+        due_date: { type: string, format: date, nullable: true }
+
+    AssignRequest:
+      type: object
+      properties:
+        assignee_type: { type: string, enum: [pilot, user, crew], nullable: true }
+        assignee_id: { type: string, format: uuid, nullable: true }
+
+    StatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [backlog, todo, in_progress, in_review, done, blocked, cancelled] }
+
+    PostCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string }
+
+    CreatePilotRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [claude, codex], default: claude, description: Kind identifier. }
+
+    CreateCrewRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+
+    CrewMemberRequest:
+      type: object
+      required: [member_type, member_id]
+      properties:
+        member_type: { type: string, enum: [pilot, user] }
+        member_id: { type: string, format: uuid }
+        role: { type: string, enum: [leader, member], default: member }
+
+    SetStateRequest:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [starting, running, blocked, succeeded, failed, canceled]
+
+    AppendEventRequest:
+      type: object
+      properties:
+        kind: { type: string, default: log }
+        message: { type: string }
+
+    AppendArtifactRequest:
+      type: object
+      properties:
+        kind: { type: string, default: artifact, example: diff }
+        name: { type: string, example: git.diff }
+        content: { type: string }
+
+    RunResultRequest:
+      type: object
+      properties:
+        session_id: { type: string, description: The pilot session id to persist for resume }
+        message: { type: string, description: The pilot's final message; posted as a pilot comment if non-empty }
+        needs_input: { type: boolean, description: pilot is awaiting a human answer to continue (→ input_requested signal) }
+        op_status: { type: string, description: pilot-requested operation status (overrides the default success→in_review / fail→blocked mapping) }

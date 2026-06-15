@@ -1,0 +1,295 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Design tokens → Tailwind theme. UFO's own palette: zinc neutrals + a brand
+   blue, with semantic success/warning/info, in oklch. Light + dark. */
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.969 0.002 286.375);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+  --primary: oklch(0.21 0.006 285.885);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.705 0.015 286.067);
+  --brand: oklch(0.55 0.16 255);
+  --brand-foreground: oklch(0.985 0 0);
+  --success: oklch(0.55 0.16 145);
+  --warning: oklch(0.72 0.16 85);
+  --info: oklch(0.55 0.18 250);
+  --sidebar: oklch(0.969 0.002 286.375);
+  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar-accent: oklch(0.93 0.003 286.375);
+  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
+  --sidebar-border: oklch(0.92 0.004 286.32);
+}
+
+.dark {
+  --background: oklch(0.205 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.246 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.246 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.92 0.004 286.32);
+  --primary-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.288 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.288 0.006 286.033);
+  --muted-foreground: oklch(0.72 0.015 286.067);
+  --accent: oklch(0.31 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.552 0.016 285.938);
+  --brand: oklch(0.65 0.16 255);
+  --brand-foreground: oklch(0.985 0 0);
+  --success: oklch(0.65 0.15 145);
+  --warning: oklch(0.75 0.16 85);
+  --info: oklch(0.65 0.18 250);
+  --sidebar: oklch(0.205 0.005 285.823);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.27 0.006 286.033);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 12%);
+}
+
+.bg-board {
+  background-color: var(--background);
+}
+
+/* Urgent ops: flames up the left edge. */
+.ufo-fire {
+  position: absolute;
+  left: -3px;
+  top: -10px;
+  bottom: -2px;
+  width: 16px;
+  pointer-events: none;
+}
+.ufo-fire.ufo-detail { width: 22px; left: -4px; top: -16px; }
+.ufo-flames {
+  position: absolute;
+  inset: 0;
+  filter: url(#ufo-fire) blur(1.4px) brightness(1.07) contrast(1.22) saturate(1.18);
+}
+.dark .ufo-flames,
+.dark .ufo-sparks {
+  mix-blend-mode: screen;
+}
+.ufo-flames i {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50% 50% 42% 42% / 72% 72% 28% 28%;
+  transform-origin: 50% 100%;
+  background: linear-gradient(
+    to top,
+    #7f1d1d 0%,
+    #dc2626 20%,
+    #ea580c 44%,
+    #f97316 66%,
+    #facc15 86%,
+    rgba(250, 204, 21, 0) 100%
+  );
+  animation: ufo-lick 820ms ease-in-out infinite alternate;
+}
+.dark .ufo-flames i {
+  background: linear-gradient(
+    to top,
+    #fff7d6 0%,
+    #fde047 14%,
+    #f59e0b 38%,
+    #f97316 60%,
+    #ef4444 82%,
+    rgba(220, 38, 38, 0) 100%
+  );
+}
+.ufo-flames i:nth-child(2) { animation-duration: 1240ms; animation-delay: -360ms; opacity: 0.82; filter: hue-rotate(-8deg); }
+.ufo-flames i:nth-child(3) { animation-duration: 640ms;  animation-delay: -180ms; opacity: 0.72; width: 72%; left: 14%; }
+.ufo-flames i:nth-child(4) { animation-duration: 980ms;  animation-delay: -520ms; opacity: 0.6;  width: 48%; left: 26%; }
+.ufo-flames i:nth-child(5) { animation-duration: 760ms;  animation-delay: -260ms; opacity: 0.55; width: 36%; left: 8%; }
+@keyframes ufo-lick {
+  0%   { transform: translateY(0)    scaleY(1)    scaleX(1)    skewX(0deg); }
+  25%  { transform: translateY(-4px) scaleY(1.16) scaleX(0.9)  skewX(5deg); }
+  50%  { transform: translateY(1px)  scaleY(0.92) scaleX(1.08) skewX(-4deg); }
+  75%  { transform: translateY(-3px) scaleY(1.12) scaleX(0.94) skewX(4deg); }
+  100% { transform: translateY(0)    scaleY(1.04) scaleX(0.98) skewX(-5deg); }
+}
+.ufo-sparks { position: absolute; inset: 0; }
+.ufo-sparks b {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: #fb923c;
+  box-shadow: 0 0 4px 1px rgba(234, 88, 12, 0.9);
+  opacity: 0;
+  animation: ufo-spark 1600ms linear infinite;
+}
+.dark .ufo-sparks b { background: #fde047; box-shadow: 0 0 4px 1px rgba(249, 115, 22, 0.9); }
+.ufo-sparks b:nth-child(1) { bottom: 30%; left: 30%; animation-delay: 0ms; }
+.ufo-sparks b:nth-child(2) { bottom: 20%; left: 55%; animation-delay: 560ms; }
+.ufo-sparks b:nth-child(3) { bottom: 40%; left: 20%; animation-delay: 1080ms; }
+.ufo-sparks b:nth-child(4) { bottom: 25%; left: 60%; animation-delay: 1400ms; }
+@keyframes ufo-spark {
+  0%   { transform: translate(0, 0) scale(1);    opacity: 0; }
+  15%  { opacity: 1; }
+  70%  { opacity: 0.85; }
+  100% { transform: translate(-3px, -30px) scale(0.3); opacity: 0; }
+}
+/* Detail page: small flame glyphs that drift in and out, sparsely. */
+.ufo-flydeck {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* Detail flyers: outer traces a path, inner spins independently. */
+.ufo-fly {
+  position: absolute;
+  opacity: 0;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+.ufo-flyspin {
+  display: inline-block;
+  line-height: 1;
+  user-select: none;
+  filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.5));
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.ufo-flyflame { color: #f97316; }
+.dark .ufo-flyflame { color: #fb923c; }
+
+@keyframes ufo-spin { to { transform: rotate(360deg); } }
+@keyframes ufo-spin-rev { to { transform: rotate(-360deg); } }
+
+@keyframes ufo-path-cross {
+  0% { opacity: 0; transform: translate(-6vw, 0); }
+  7% { opacity: var(--peak, 0.6); }
+  50% { transform: translate(50vw, -8vh); }
+  93% { opacity: var(--peak, 0.6); }
+  100% { opacity: 0; transform: translate(108vw, 6vh); }
+}
+@keyframes ufo-path-diag { /* lower-left → upper-right */
+  0% { opacity: 0; transform: translate(0, 0); }
+  9% { opacity: var(--peak, 0.6); }
+  91% { opacity: var(--peak, 0.6); }
+  100% { opacity: 0; transform: translate(98vw, -86vh); }
+}
+@keyframes ufo-path-diag2 { /* lower-right → upper-left */
+  0% { opacity: 0; transform: translate(0, 0); }
+  9% { opacity: var(--peak, 0.6); }
+  91% { opacity: var(--peak, 0.6); }
+  100% { opacity: 0; transform: translate(-100vw, -82vh); }
+}
+@keyframes ufo-path-orbit { /* a circle */
+  0% { opacity: 0; transform: translate(80px, 0); }
+  8% { opacity: var(--peak, 0.6); transform: translate(57px, -57px); }
+  25% { transform: translate(0, -80px); }
+  42% { transform: translate(-57px, -57px); }
+  50% { transform: translate(-80px, 0); }
+  58% { transform: translate(-57px, 57px); }
+  75% { transform: translate(0, 80px); }
+  92% { opacity: var(--peak, 0.6); transform: translate(57px, 57px); }
+  100% { opacity: 0; transform: translate(80px, 0); }
+}
+@keyframes ufo-path-arc { /* up-and-over arc */
+  0% { opacity: 0; transform: translate(0, 0); }
+  9% { opacity: var(--peak, 0.6); }
+  25% { transform: translate(34vw, -30vh); }
+  50% { transform: translate(60vw, -42vh); }
+  75% { transform: translate(86vw, -30vh); }
+  91% { opacity: var(--peak, 0.6); }
+  100% { opacity: 0; transform: translate(112vw, 2vh); }
+}
+@keyframes ufo-path-rise { /* long weaving rise */
+  0% { opacity: 0; transform: translate(0, 0); }
+  10% { opacity: var(--peak, 0.6); transform: translate(-26px, -8vh); }
+  35% { transform: translate(34px, -34vh); }
+  60% { transform: translate(-30px, -60vh); }
+  85% { opacity: var(--peak, 0.6); transform: translate(24px, -86vh); }
+  100% { opacity: 0; transform: translate(-12px, -104vh); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ufo-flames i,
+  .ufo-sparks b,
+  .ufo-fly,
+  .ufo-flyspin { animation: none; }
+  .ufo-sparks b,
+  .ufo-fly { opacity: 0; }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+}

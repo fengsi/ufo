@@ -1,0 +1,83 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  api:
+    name: API (Go)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ufo
+          POSTGRES_PASSWORD: ufo
+          POSTGRES_DB: ufo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ufo" --health-interval 3s
+          --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/api/go.mod
+      - name: Build & vet
+        working-directory: apps/api
+        run: |
+          go build ./...
+          go vet ./...
+      - name: Test (incl. authz integration tests)
+        working-directory: apps/api
+        env:
+          UFO_TEST_DATABASE_URL: postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable
+        run: go test ./...
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+      - name: Install & check
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+  rover:
+    name: Rover (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format, lint, test, build
+        working-directory: apps/rover
+        run: |
+          cargo fmt --check
+          cargo clippy -- -D warnings
+          cargo test
+          cargo build
+
+  protocol:
+    name: OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+      - name: Lint spec
+        run: npx --yes @redocly/cli@2.32.2 lint packages/protocol/openapi.yaml

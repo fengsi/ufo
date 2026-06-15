@@ -1,0 +1,67 @@
+name: ufo
+
+services:
+  postgres:
+    image: postgres:18
+    container_name: ufo-postgres
+    environment:
+      POSTGRES_USER: ufo
+      POSTGRES_PASSWORD: ufo
+      POSTGRES_DB: ufo
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ufo -d ufo"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: ufo-api
+    environment:
+      DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo?sslmode=disable
+      UFO_API_ADDR: ":8080"
+      UFO_RUN_LEASE_SECONDS: ${UFO_RUN_LEASE_SECONDS:-30}
+      UFO_LONGPOLL_SECONDS: ${UFO_LONGPOLL_SECONDS:-25}
+      UFO_WEB_ORIGIN: http://localhost:3000,http://127.0.0.1:3000
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    develop:
+      watch:
+        - action: rebuild
+          path: ./apps/api
+        - action: rebuild
+          path: ./db/migrations
+
+  web:
+    build:
+      context: apps/web
+      dockerfile: Dockerfile
+      args:
+        API_PROXY_TARGET: http://api:8080
+    container_name: ufo-web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    develop:
+      watch:
+        - action: rebuild
+          path: ./apps/web
+
+volumes:
+  data:
