@@ -179,6 +179,18 @@ enum RoverAction {
         /// key=value (keys: code, hub, name, units, tags where tags is :-separated).
         #[arg(long = "rover")]
         rover: Vec<String>,
+        /// Keep the old log-oriented daemon output after enrollment.
+        #[arg(long)]
+        headless: bool,
+        /// Seconds to wait after a failed claim (hub unreachable) before retrying.
+        #[arg(long, env = "UFO_ROVER_RETRY_SECONDS", default_value_t = 1)]
+        retry_seconds: u64,
+        /// Upgrade and restart when the Hub requires a newer rover.
+        #[arg(long, env = "UFO_ROVER_AUTO_UPGRADE", default_value_t = false)]
+        auto_upgrade: bool,
+        /// Outpost: this host's rover base directory (default ~/.ufo).
+        #[arg(long = "outpost", env = "UFO_ROVER_OUTPOST")]
+        outpost: Option<PathBuf>,
     },
     /// List rover enrollments on this host.
     List,
@@ -405,7 +417,26 @@ async fn main() -> Result<()> {
                 tags,
                 interactive,
                 rover,
-            } => cmd_enroll(hub, enrollment_code, name, units, tags, interactive, rover).await,
+                headless,
+                retry_seconds,
+                auto_upgrade,
+                outpost,
+            } => {
+                cmd_enroll(EnrollArgs {
+                    hub,
+                    enrollment_code,
+                    name,
+                    units,
+                    tags,
+                    interactive,
+                    rover,
+                    headless,
+                    retry_seconds,
+                    auto_upgrade,
+                    outpost,
+                })
+                .await
+            }
             RoverAction::List => cmd_list(),
             RoverAction::Status { rover } => cmd_status(rover).await,
             RoverAction::Remove { rover, all } => cmd_remove(rover, all).await,
@@ -556,7 +587,7 @@ async fn detect_auto_tags() -> Vec<String> {
     PilotCaps::detect().await.auto_tags()
 }
 
-async fn cmd_enroll(
+struct EnrollArgs {
     hub: String,
     enrollment_code: Option<String>,
     name: Option<String>,
@@ -564,13 +595,33 @@ async fn cmd_enroll(
     tags: Vec<String>,
     interactive: bool,
     rover: Vec<String>,
-) -> Result<()> {
-    check_latest_rover_version().await;
+    headless: bool,
+    retry_seconds: u64,
+    auto_upgrade: bool,
+    outpost: Option<PathBuf>,
+}
+
+async fn cmd_enroll(args: EnrollArgs) -> Result<()> {
+    let EnrollArgs {
+        hub,
+        enrollment_code,
+        name,
+        units,
+        tags,
+        interactive,
+        rover,
+        headless,
+        retry_seconds,
+        auto_upgrade,
+        outpost,
+    } = args;
     if !rover.is_empty() {
-        return cmd_enroll_multi(rover).await;
+        cmd_enroll_multi(rover).await?;
+        return start_after_enroll(headless, retry_seconds, auto_upgrade, outpost).await;
     }
     if interactive {
-        return cmd_enroll_interactive().await;
+        cmd_enroll_interactive().await?;
+        return start_after_enroll(headless, retry_seconds, auto_upgrade, outpost).await;
     }
     let client = http_client();
     let nm = match name {
@@ -581,7 +632,17 @@ async fn cmd_enroll(
     match enrollment_code {
         Some(code) => enroll_code(&client, &hub, &code, nm, units, tags).await,
         None => enroll_web(&client, &hub, nm, units, tags).await,
-    }
+    }?;
+    start_after_enroll(headless, retry_seconds, auto_upgrade, outpost).await
+}
+
+async fn start_after_enroll(
+    headless: bool,
+    retry_seconds: u64,
+    auto_upgrade: bool,
+    outpost: Option<PathBuf>,
+) -> Result<()> {
+    cmd_start(None, headless, retry_seconds, None, auto_upgrade, outpost).await
 }
 
 /// Code-based enrollment: exchange a code for a connection token and persist it.
@@ -604,17 +665,26 @@ async fn enroll_code(
     Ok(())
 }
 
-/// The web UI base the hub advertises (discovery `web_url`), else the hub itself.
-async fn approval_base(client: &Client, hub: &str) -> String {
+/// The web UI base the hub advertises for browser approval.
+async fn approval_base(client: &Client, hub: &str) -> Result<String> {
     let hub = hub.trim_end_matches('/');
-    if let Ok(resp) = client.get(format!("{hub}/")).send().await
-        && let Ok(v) = resp.json::<serde_json::Value>().await
-        && let Some(u) = v.get("web_url").and_then(|x| x.as_str())
-        && !u.is_empty()
-    {
-        return u.trim_end_matches('/').to_string();
+    let resp = client
+        .get(format!("{hub}/"))
+        .send()
+        .await
+        .with_context(|| format!("fetch hub discovery from {hub}/"))?;
+    if !resp.status().is_success() {
+        return Err(hub_status_error("hub discovery", resp).await);
     }
-    hub.to_string()
+    let discovery: serde_json::Value = resp.json().await.context("decode hub discovery")?;
+    discovery_web_url(&discovery).ok_or_else(|| {
+        anyhow!("hub discovery did not advertise web_url; set UFO_HUB_WEB_URL on the Hub")
+    })
+}
+
+fn discovery_web_url(discovery: &serde_json::Value) -> Option<String> {
+    let web_url = discovery.get("web_url")?.as_str()?.trim();
+    (!web_url.is_empty()).then(|| web_url.trim_end_matches('/').to_string())
 }
 
 /// Web enrollment: open browser approval when possible, then poll the normal
@@ -632,7 +702,7 @@ async fn enroll_web(
     };
     let auto = detect_auto_tags().await;
     let code = generate_enrollment_code()?;
-    let base = approval_base(client, hub).await;
+    let base = approval_base(client, hub).await?;
     let url = approval_url(&base, &code, &nm, units, &tags);
     if open_approval_url(&url) {
         println!("Opening UFO to the Rovers page for approval.");
@@ -903,6 +973,9 @@ fn has_homebrew_version_override(version: Option<&str>) -> bool {
     version.is_some_and(|value| !value.trim().is_empty())
 }
 
+#[cfg(not(windows))]
+const HOMEBREW_FORMULA: &str = "fengsi/ufo/ufo-cli";
+
 async fn cmd_upgrade(version: Option<String>, install_dir: Option<PathBuf>) -> Result<()> {
     #[cfg(windows)]
     {
@@ -918,19 +991,21 @@ async fn cmd_upgrade(version: Option<String>, install_dir: Option<PathBuf>) -> R
         if is_homebrew_install(&std::env::current_exe().context("current executable")?) {
             if has_homebrew_version_override(version.as_deref()) {
                 return Err(anyhow!(
-                    "Homebrew install detected; install a specific version with Homebrew, or run `brew upgrade ufo-cli`"
+                    "Homebrew install detected; install a specific version with Homebrew, or run `brew upgrade {HOMEBREW_FORMULA}`"
                 ));
             }
             let status = Command::new("brew")
-                .args(["upgrade", "ufo-cli"])
+                .args(["upgrade", HOMEBREW_FORMULA])
                 .stdin(Stdio::null())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .status()
                 .await
-                .context("run brew upgrade ufo-cli")?;
+                .with_context(|| format!("run brew upgrade {HOMEBREW_FORMULA}"))?;
             if !status.success() {
-                return Err(anyhow!("brew upgrade ufo-cli failed with {status}"));
+                return Err(anyhow!(
+                    "brew upgrade {HOMEBREW_FORMULA} failed with {status}"
+                ));
             }
             return Ok(());
         }
@@ -6928,9 +7003,9 @@ fn update_hint_for_current_install() -> &'static str {
 #[cfg(not(windows))]
 fn update_hint_for_exe(exe: &Path) -> &'static str {
     if is_homebrew_install(exe) {
-        "Update with `brew upgrade ufo-cli`."
+        "Update with `brew upgrade fengsi/ufo/ufo-cli`."
     } else {
-        "Update with `ufo rover upgrade`, rerun the curl installer, `brew upgrade ufo-cli`, or `cargo install ufo-cli --force`."
+        "Update with `ufo rover upgrade`, rerun the curl installer, `brew upgrade fengsi/ufo/ufo-cli`, or `cargo install ufo-cli --force`."
     }
 }
 

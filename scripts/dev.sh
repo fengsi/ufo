@@ -9,7 +9,7 @@
 #   scripts/dev.sh web       # host: Next.js web board (needs api up)
 #   scripts/dev.sh rover           # host: run enrolled rovers (rover start)
 #   scripts/dev.sh rover enroll    # host: web-enroll (approve in browser), then start
-#   scripts/dev.sh rover enroll -- --headless  # enroll, then start headless
+#   scripts/dev.sh rover enroll --headless  # enroll, then start headless
 #
 # `up` is the default. The host commands are the all-local fallback (Go + Node).
 # Env defaults come from .env if present.
@@ -64,29 +64,18 @@ case "$cmd" in
     ;;
   rover)
     # First run, code: UFO_ROVER_ENROLLMENT_CODE=<code> scripts/dev.sh rover enroll
-    # First run, web:  scripts/dev.sh rover enroll [--name NAME --units N --tag TAG] [-- start-args]
+    # First run, web:  scripts/dev.sh rover enroll [--name NAME --units N --tag TAG]
     #   (opens browser approval when possible, then starts after approval)
     # After enrolling, `scripts/dev.sh rover` runs all enrolled rovers concurrently.
     if [ "${1:-}" = "enroll" ]; then
       shift
       enroll_args=""
-      start_args=""
-      parsing_start=0
-      enroll_help=0
       while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--" ] && [ "$parsing_start" = 0 ]; then
-          parsing_start=1
+        if [ "$1" = "--" ]; then
           shift
           continue
         fi
-        if [ "$parsing_start" = 1 ]; then
-          append_quoted_arg start_args "$1"
-        else
-          case "$1" in
-            -h|--help) enroll_help=1 ;;
-          esac
-          append_quoted_arg enroll_args "$1"
-        fi
+        append_quoted_arg enroll_args "$1"
         shift
       done
       enroll_cmd="cargo run --manifest-path apps/rover/Cargo.toml -- rover enroll --hub $(quote_arg "$UFO_HUB_URL")"
@@ -94,8 +83,6 @@ case "$cmd" in
         enroll_cmd="$enroll_cmd --enrollment-code $(quote_arg "$UFO_ROVER_ENROLLMENT_CODE")"
       fi
       eval "$enroll_cmd$enroll_args"
-      [ "$enroll_help" = 0 ] || exit 0
-      eval "cargo run --manifest-path apps/rover/Cargo.toml -- rover start$start_args"
     else
       cargo run --manifest-path apps/rover/Cargo.toml -- rover start "$@"
     fi
@@ -121,7 +108,7 @@ case "$cmd" in
     echo "  api       host: Go Hub (go run)" >&2
     echo "  web       host: Next.js dev server" >&2
     echo "  rover     host: run enrolled rovers; 'rover enroll' web-enrolls then starts" >&2
-    echo "            pass start args after --, e.g. 'rover enroll -- --headless'" >&2
+    echo "            e.g. 'rover enroll --headless'" >&2
     exit 2
     ;;
 esac

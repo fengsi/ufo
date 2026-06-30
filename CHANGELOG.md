@@ -7,12 +7,23 @@ All notable changes to UFO are recorded here.
 > Back up before upgrading; tagged release notes call out upgrade caveats, and
 > arbitrary source commits may not include a supported upgrade path.
 
+## [0.3.1] — 2026-06-30
+
+Rover patch release.
+
+### Rover CLI
+- Fixed browser-approved rover enrollment.
+- Made `ufo rover enroll` continue into `ufo rover start` after enrollment.
+- Simplified `scripts/dev.sh rover enroll` to delegate startup to the rover
+  CLI instead of starting a second rover process itself.
+- Switched Homebrew install and upgrade guidance to the fully qualified
+  `fengsi/ufo/ufo-cli` formula.
+
 ## [0.3.0] — 2026-06-30
 
-Public beta infrastructure release. This release substantially reshapes the
-beta database schema, API surface, rover protocol, and storage model; back up
-0.2.x data before upgrading and expect to reset or manually migrate beta dev
-databases.
+Public beta release. This release substantially reshapes the database schema,
+API surface, rover protocol, and storage model; back up 0.2.x data before
+upgrading, and expect to reset dev databases or migrate them manually.
 
 ### Accounts, tenancy & API
 - Replaced browser session cookies with httpOnly `ufo_access` JWT cookies and

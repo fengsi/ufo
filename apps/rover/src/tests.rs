@@ -186,7 +186,7 @@ fn update_hint_matches_platform_installer_support() {
         assert!(update_hint_for_exe(Path::new("/opt/ufo/bin/ufo")).contains("ufo rover upgrade"));
         assert_eq!(
             update_hint_for_exe(Path::new("/opt/homebrew/Cellar/ufo-cli/0.3.0/bin/ufo")),
-            "Update with `brew upgrade ufo-cli`."
+            "Update with `brew upgrade fengsi/ufo/ufo-cli`."
         );
     }
 }
@@ -285,6 +285,16 @@ fn approval_url_keeps_code_in_fragment() {
         approval_url("https://app/", code, "lab rover", 2, &tags),
         "https://app/rovers#enroll=0123456789abcdef0123456789abcdef01234567&name=lab%20rover&units=2&tag=gpu%2Cfast&tag=region%3Aus%20west"
     );
+}
+
+#[test]
+fn discovery_web_url_is_required_for_browser_enrollment() {
+    assert_eq!(
+        discovery_web_url(&json!({ "web_url": "http://localhost:3000/" })).as_deref(),
+        Some("http://localhost:3000")
+    );
+    assert!(discovery_web_url(&json!({ "web_url": "" })).is_none());
+    assert!(discovery_web_url(&json!({})).is_none());
 }
 
 #[test]

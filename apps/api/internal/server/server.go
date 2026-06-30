@@ -103,7 +103,7 @@ func New(pool *pgxpool.Pool, longPoll time.Duration, notifier *Notifier) *Server
 }
 
 const (
-	currentRoverVersion = "0.3.0"
+	currentRoverVersion = "0.3.1"
 	roverVersionHeader  = "X-UFO-Rover-Version"
 	maxRoverUnits       = 100
 )

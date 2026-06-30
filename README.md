@@ -201,8 +201,7 @@ curl -fsSL https://getufo.dev/install.sh | sh
 Homebrew also works:
 
 ```bash
-brew tap fengsi/ufo
-brew install ufo-cli
+brew install fengsi/ufo/ufo-cli
 ```
 
 The rover CI runs on macOS, FreeBSD, Linux, and Windows. Other operating
@@ -269,7 +268,7 @@ data.
 
    In an interactive terminal, the rover start command opens the live rover
    TUI. Use `scripts/dev.sh rover --headless` for later runs, or
-   `scripts/dev.sh rover enroll -- --headless` on first run, for CI,
+   `scripts/dev.sh rover enroll --headless` on first run, for CI,
    launchd/systemd, or old log-oriented output.
 
    For list/status/remove commands and installed CLI usage, see
@@ -312,7 +311,7 @@ Copy `.env.example` to `.env` to override defaults:
 | `UFO_HUB_JWT_ACCESS_SECONDS` | `3600` — user access JWT lifetime | api |
 | `UFO_HUB_JWT_ISSUER` | `ufo-hub` — user access JWT issuer | api |
 | `UFO_HUB_JWT_AUDIENCE` | `ufo-api` — user access JWT audience | api |
-| `UFO_HUB_MIN_ROVER_VERSION` | `0.3.0` — oldest rover CLI version allowed to enroll/connect | api |
+| `UFO_HUB_MIN_ROVER_VERSION` | `0.3.1` — oldest rover CLI version allowed to enroll/connect | api |
 | `UFO_HUB_MAX_ROVER_VERSION` | _(unset)_ — optional newest rover CLI version allowed to enroll/connect | api |
 | `UFO_HUB_RUN_LEASE_SECONDS` | `30` | api |
 | `UFO_HUB_LONGPOLL_SECONDS` | `25` | api |

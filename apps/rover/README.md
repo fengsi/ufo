@@ -29,14 +29,13 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.3.0 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.3.1 sh
 ```
 
-Homebrew tap (macOS, Linux):
+Homebrew (macOS, Linux):
 
 ```bash
-brew tap fengsi/ufo
-brew install ufo-cli
+brew install fengsi/ufo/ufo-cli
 ```
 
 Windows:
@@ -86,14 +85,16 @@ For code-based or non-browser enrollment, create an enrollment code from the
 Rovers panel and pass it with `UFO_ROVER_ENROLLMENT_CODE=<code> ufo rover
 enroll`.
 
-`ufo rover start` opens the live rover TUI when stdout is an interactive
-terminal. It still runs the rover daemon loop: each enrollment long-polls for
-work. Use `ufo rover start --headless` for CI, launchd/systemd, or old
+`ufo rover enroll` and `ufo rover start` open the live rover TUI when stdout
+is an interactive terminal. They still run the rover daemon loop: each
+enrollment long-polls for work. Use `ufo rover enroll --headless` on first
+run, or `ufo rover start --headless` later, for CI, launchd/systemd, or old
 log-oriented output.
 
-Use `ufo rover start --auto-upgrade` or `UFO_ROVER_AUTO_UPGRADE=1` to install
-and restart automatically when the Hub requires a newer rover. On Windows,
-update from the release archive or Cargo instead.
+Use `ufo rover enroll --auto-upgrade`, `ufo rover start --auto-upgrade`, or
+`UFO_ROVER_AUTO_UPGRADE=1` to install and restart automatically when the Hub
+requires a newer rover. On Windows, update from the release archive or Cargo
+instead.
 
 Useful commands:
 
