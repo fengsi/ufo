@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/zeebo/blake3"
 
-	"ufo/apps/api/internal/auth"
 	"ufo/apps/api/internal/db"
 )
 
@@ -599,7 +599,7 @@ func (s *Server) storeAssetBytes(ctx context.Context, q *db.Queries, owner asset
 		PublicID: publicID, FleetID: nullableID(owner.FleetID),
 		ObjectKey: objectKey, Filename: filename,
 		ContentType: contentType, ByteSize: int64(len(body)), Checksums: checksumsJSON(map[string]string{"blake3": hash}),
-		StorageBackend: s.assets.Backend(), State: "ready", Metadata: metadata,
+		StorageBackend: s.assets.Backend(), Status: "ready", Metadata: metadata,
 		CreatedBy: nullableID(createdByUserID),
 	})
 	if err != nil {
@@ -635,7 +635,7 @@ func (s *Server) createPendingAsset(ctx context.Context, q *db.Queries, owner as
 		PublicID: publicID, FleetID: nullableID(owner.FleetID),
 		ObjectKey: objectKey,
 		Filename:  filename, ContentType: contentType, ByteSize: byteSize, Checksums: nil,
-		StorageBackend: s.assets.Backend(), State: "pending", Metadata: metadata,
+		StorageBackend: s.assets.Backend(), Status: "pending", Metadata: metadata,
 		CreatedBy: nullableID(createdByUserID),
 	})
 }
@@ -760,18 +760,8 @@ func (s *Server) assetReadActor(w http.ResponseWriter, r *http.Request) (assetRe
 		}
 		return assetReadActor{roverID: rover.ID, roverFleetID: rover.FleetID, isRover: true}, true
 	}
-	if c, err := r.Cookie(accessCookie); err == nil {
-		user, err := s.userFromAccessToken(r.Context(), c.Value)
-		if err != nil {
-			httpError(w, http.StatusUnauthorized, "invalid access token")
-			return assetReadActor{}, false
-		}
+	if user, ok := s.userFromCookies(w, r, true); ok {
 		return assetReadActor{userID: user.ID, isUser: true}, true
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		if user, err := s.q.GetSessionUser(r.Context(), auth.HashToken(c.Value)); err == nil {
-			return assetReadActor{userID: user.ID, isUser: true}, true
-		}
 	}
 	httpError(w, http.StatusUnauthorized, "not authenticated")
 	return assetReadActor{}, false
@@ -857,7 +847,7 @@ func (s *Server) readAssetBytes(ctx context.Context, asset db.Asset) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	if asset.State == "ready" && checksumMap(asset.Checksums)["blake3"] == "" {
+	if asset.Status == "ready" && checksumMap(asset.Checksums)["blake3"] == "" {
 		_ = s.q.MergeAssetChecksums(ctx, db.MergeAssetChecksumsParams{ID: asset.ID, Checksums: checksumsJSON(map[string]string{"blake3": blake3Hex(b)})})
 	}
 	return b, nil
@@ -1193,6 +1183,7 @@ func (s *Server) serveAssetFile(w http.ResponseWriter, r *http.Request, asset db
 	defer f.Close()
 	w.Header().Set("Content-Type", asset.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(asset.ByteSize, 10))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if blake3 := checksumMap(asset.Checksums)["blake3"]; blake3 != "" {
 		w.Header().Set("X-UFO-Blake3", blake3)
 	}
@@ -1259,16 +1250,50 @@ func (s *Server) resolveAssets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.assetDTOs(r.Context(), filtered))
 }
 
-func (s *Server) listOperationAssets(w http.ResponseWriter, r *http.Request) {
-	op, _, ok := s.operationInFleet(w, r)
+func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.URL.Query().Get("operation_id")) != "" {
+		op, ok := s.operationFromQuery(w, r, "operation_id")
+		if !ok {
+			return
+		}
+		text := s.operationAssetReferenceText(r.Context(), s.q, op, "")
+		assets, err := s.operationAssets(r.Context(), s.q, op, text)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.assetDTOs(r.Context(), assets))
+		return
+	}
+	fleetIDs, ok := s.fleetIDsFromQuery(w, r)
 	if !ok {
 		return
 	}
-	text := s.operationAssetReferenceText(r.Context(), s.q, op, "")
-	assets, err := s.operationAssets(r.Context(), s.q, op, text)
-	if err != nil {
-		serverError(w, err)
-		return
+	limit := int32(100)
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 500 {
+			httpError(w, http.StatusBadRequest, "limit must be 1..500")
+			return
+		}
+		limit = int32(n)
+	}
+	var assets []db.Asset
+	for _, wid := range fleetIDs {
+		rows, err := s.q.ListReadyAssetsByFleet(r.Context(), db.ListReadyAssetsByFleetParams{
+			FleetID: pgtype.Int8{Int64: wid, Valid: true}, Limit: limit,
+		})
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		assets = append(assets, rows...)
+	}
+	if len(fleetIDs) > 1 {
+		sort.Slice(assets, func(i, j int) bool { return assets[i].ID > assets[j].ID })
+		if int32(len(assets)) > limit {
+			assets = assets[:limit]
+		}
 	}
 	writeJSON(w, http.StatusOK, s.assetDTOs(r.Context(), assets))
 }
@@ -1318,19 +1343,8 @@ func (s *Server) assetWriteActor(w http.ResponseWriter, r *http.Request) (assetW
 		}
 		return assetWriteActor{rover: roverCtx{ID: rv.ID, FleetID: rv.FleetID, Name: rv.Name, Tags: unionTags(rv.AutoTags, rv.Tags)}, isRover: true}, true
 	}
-	if c, err := r.Cookie(accessCookie); err == nil {
-		user, err := s.userFromAccessToken(r.Context(), c.Value)
-		if err != nil {
-			httpError(w, http.StatusUnauthorized, "invalid access token")
-			return assetWriteActor{}, false
-		}
+	if user, ok := s.userFromCookies(w, r, true); ok {
 		return assetWriteActor{user: user, isUser: true}, true
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		user, err := s.q.GetSessionUser(r.Context(), auth.HashToken(c.Value))
-		if err == nil {
-			return assetWriteActor{user: user, isUser: true}, true
-		}
 	}
 	httpError(w, http.StatusUnauthorized, "not authenticated")
 	return assetWriteActor{}, false
@@ -1515,7 +1529,7 @@ func (s *Server) putAssetFile(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAssetWriteAccess(w, r, actor, asset) {
 		return
 	}
-	if asset.State != "pending" || asset.StorageBackend != assetBackendLocal {
+	if asset.Status != "pending" || asset.StorageBackend != assetBackendLocal {
 		httpError(w, http.StatusBadRequest, "asset is not uploadable")
 		return
 	}
@@ -1545,7 +1559,7 @@ func (s *Server) putAssetFile(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchAssetReq struct {
-	State string `json:"state"`
+	Status string `json:"status"`
 }
 
 func (s *Server) patchAsset(w http.ResponseWriter, r *http.Request) {
@@ -1557,7 +1571,7 @@ func (s *Server) patchAsset(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if req.State != "ready" {
+	if req.Status != "ready" {
 		httpError(w, http.StatusBadRequest, "unsupported asset patch")
 		return
 	}
@@ -1573,7 +1587,7 @@ func (s *Server) patchAsset(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAssetWriteAccess(w, r, actor, asset) {
 		return
 	}
-	if asset.State != "pending" {
+	if asset.Status != "pending" {
 		httpError(w, http.StatusBadRequest, "asset is not pending")
 		return
 	}

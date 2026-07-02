@@ -71,6 +71,7 @@ func TestRoverVersionAllowed(t *testing.T) {
 func TestNewDefaultsToCurrentRoverMinAndUnboundedMax(t *testing.T) {
 	t.Setenv("UFO_HUB_MIN_ROVER_VERSION", "")
 	t.Setenv("UFO_HUB_MAX_ROVER_VERSION", "")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
 
 	s := New(nil, 0, nil)
 	if s.minRoverVersion != currentRoverVersion || s.maxRoverVersion != "" {
@@ -107,6 +108,7 @@ func TestJWTSigningKeyAcceptsDocumentedBase64Seed(t *testing.T) {
 		seed[i] = byte(i + 1)
 	}
 	t.Setenv("UFO_HUB_JWT_PRIVATE_KEY", base64.StdEncoding.EncodeToString(seed))
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "")
 
 	key, err := jwtSigningKeyFromEnv()
 	if err != nil {
@@ -114,6 +116,39 @@ func TestJWTSigningKeyAcceptsDocumentedBase64Seed(t *testing.T) {
 	}
 	if len(key) != ed25519.PrivateKeySize {
 		t.Fatalf("key length = %d, want %d", len(key), ed25519.PrivateKeySize)
+	}
+}
+
+func TestJWTSigningKeyRequiresKeyWithoutEphemeral(t *testing.T) {
+	t.Setenv("UFO_HUB_JWT_PRIVATE_KEY", "")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "")
+	if _, err := jwtSigningKeyFromEnv(); err == nil {
+		t.Fatal("expected error when JWT key unset without UFO_HUB_JWT_ALLOW_EPHEMERAL")
+	}
+}
+
+func TestJWTSigningKeyEphemeralAllowed(t *testing.T) {
+	t.Setenv("UFO_HUB_JWT_PRIVATE_KEY", "")
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
+	key, err := jwtSigningKeyFromEnv()
+	if err != nil {
+		t.Fatalf("jwtSigningKeyFromEnv: %v", err)
+	}
+	if len(key) != ed25519.PrivateKeySize {
+		t.Fatalf("key length = %d, want %d", len(key), ed25519.PrivateKeySize)
+	}
+}
+
+func TestIPRateLimiter(t *testing.T) {
+	rl := newIPRateLimiter(2, time.Minute)
+	if !rl.allow("1.1.1.1") || !rl.allow("1.1.1.1") {
+		t.Fatal("first two should allow")
+	}
+	if rl.allow("1.1.1.1") {
+		t.Fatal("third should deny")
+	}
+	if !rl.allow("2.2.2.2") {
+		t.Fatal("other IP should allow")
 	}
 }
 
@@ -187,14 +222,41 @@ func TestEffectiveContextFromMetadata(t *testing.T) {
 	missionContext := []byte(`{"context":"mission root"}`)
 	operationContext := []byte(`{"context":"operation root"}`)
 
-	if got := effectiveContextFromMetadata(nil, nil, fleetContext); got != "fleet root" {
-		t.Fatalf("fleet context = %q", got)
+	gotFleet := effectiveContextFromMetadata(nil, nil, fleetContext)
+	if !strings.Contains(gotFleet, "Fleet (global)") || !strings.Contains(gotFleet, "fleet root") {
+		t.Fatalf("fleet-only stack = %q", gotFleet)
 	}
-	if got := effectiveContextFromMetadata(nil, missionContext, fleetContext); got != "mission root" {
-		t.Fatalf("mission context = %q", got)
+	if strings.Contains(gotFleet, "Mission (") || strings.Contains(gotFleet, "Operation (") {
+		t.Fatalf("fleet-only stack should omit empty layers: %q", gotFleet)
 	}
-	if got := effectiveContextFromMetadata(operationContext, missionContext, fleetContext); got != "operation root" {
-		t.Fatalf("operation context = %q", got)
+
+	gotMission := effectiveContextFromMetadata(nil, missionContext, fleetContext)
+	if !strings.Contains(gotMission, "Fleet (global)") || !strings.Contains(gotMission, "fleet root") {
+		t.Fatalf("fleet+mission missing fleet: %q", gotMission)
+	}
+	if !strings.Contains(gotMission, "Mission (cross-operation)") || !strings.Contains(gotMission, "mission root") {
+		t.Fatalf("fleet+mission missing mission: %q", gotMission)
+	}
+	// Broader layer appears before more specific.
+	if iFleet, iMission := strings.Index(gotMission, "Fleet (global)"), strings.Index(gotMission, "Mission (cross-operation)"); iFleet < 0 || iMission < 0 || iFleet > iMission {
+		t.Fatalf("expected fleet before mission in stack: %q", gotMission)
+	}
+
+	gotAll := effectiveContextFromMetadata(operationContext, missionContext, fleetContext)
+	for _, want := range []string{
+		"Fleet (global)", "fleet root",
+		"Mission (cross-operation)", "mission root",
+		"Operation (most specific)", "operation root",
+	} {
+		if !strings.Contains(gotAll, want) {
+			t.Fatalf("full stack missing %q in %q", want, gotAll)
+		}
+	}
+	iFleet := strings.Index(gotAll, "Fleet (global)")
+	iMission := strings.Index(gotAll, "Mission (cross-operation)")
+	iOp := strings.Index(gotAll, "Operation (most specific)")
+	if !(iFleet < iMission && iMission < iOp) {
+		t.Fatalf("expected fleet → mission → operation order: %q", gotAll)
 	}
 }
 

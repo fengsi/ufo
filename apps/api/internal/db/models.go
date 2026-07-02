@@ -32,7 +32,7 @@ type Asset struct {
 	ByteSize       int64              `json:"byte_size"`
 	Checksums      []byte             `json:"checksums"`
 	StorageBackend string             `json:"storage_backend"`
-	State          string             `json:"state"`
+	Status         string             `json:"status"`
 	Metadata       []byte             `json:"metadata"`
 	CreatedBy      pgtype.Int8        `json:"created_by"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
@@ -192,12 +192,25 @@ type PullRequest struct {
 	OperationID int64              `json:"operation_id"`
 	Url         string             `json:"url"`
 	Title       string             `json:"title"`
-	State       string             `json:"state"`
+	Status      string             `json:"status"`
 	Number      pgtype.Int4        `json:"number"`
 	Metadata    []byte             `json:"metadata"`
 	CreatedBy   pgtype.Int8        `json:"created_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Pulse struct {
+	ID          int64              `json:"id"`
+	PublicID    pgtype.UUID        `json:"public_id"`
+	FleetID     int64              `json:"fleet_id"`
+	RoutineID   int64              `json:"routine_id"`
+	OperationID pgtype.Int8        `json:"operation_id"`
+	Status      string             `json:"status"`
+	Metadata    []byte             `json:"metadata"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	FinishedAt  pgtype.Timestamptz `json:"finished_at"`
 }
 
 type Reaction struct {
@@ -251,7 +264,7 @@ type Run struct {
 	RequiredRoverID pgtype.Int8        `json:"required_rover_id"`
 	Pilot           string             `json:"pilot"`
 	Command         string             `json:"command"`
-	State           string             `json:"state"`
+	Status          string             `json:"status"`
 	SessionID       pgtype.Text        `json:"session_id"`
 	NeedsInput      bool               `json:"needs_input"`
 	RequestedStatus string             `json:"requested_status"`
@@ -259,6 +272,7 @@ type Run struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	HeartbeatAt     pgtype.Timestamptz `json:"heartbeat_at"`
+	FinalizedAt     pgtype.Timestamptz `json:"finalized_at"`
 }
 
 type RunEvent struct {
@@ -312,7 +326,7 @@ type SourceAction struct {
 	RunID         pgtype.Int8        `json:"run_id"`
 	RoverID       pgtype.Int8        `json:"rover_id"`
 	Kind          string             `json:"kind"`
-	State         string             `json:"state"`
+	Status        string             `json:"status"`
 	BranchName    string             `json:"branch_name"`
 	CommitSha     string             `json:"commit_sha"`
 	BaseSha       string             `json:"base_sha"`
@@ -322,7 +336,7 @@ type SourceAction struct {
 	CreatedBy     pgtype.Int8        `json:"created_by"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	ClaimedAt     pgtype.Timestamptz `json:"claimed_at"`
+	AcceptedAt    pgtype.Timestamptz `json:"accepted_at"`
 	FinishedAt    pgtype.Timestamptz `json:"finished_at"`
 }
 

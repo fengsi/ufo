@@ -38,11 +38,11 @@ solution. Routines ground the system, turning ad-hoc prompts into compounding
 momentum.
 
 > [!NOTE]
-> **Public beta:** UFO's core workflow is usable. Release notes call out
-> upgrade caveats for each tagged release; before 1.0, APIs, the database
-> schema, configuration, storage paths, and the rover protocol may still
-> change. Back up before upgrading, especially when testing arbitrary source
-> commits against data you care about.
+> **Public beta:** UFO's core workflow is usable. Tagged release notes call
+> out upgrade caveats; before 1.0, APIs, the database schema, configuration,
+> storage paths, and the rover protocol may still change. Back up before
+> upgrading, especially when testing untagged source against data you care
+> about.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
@@ -87,7 +87,7 @@ flowchart LR
 
   subgraph Host["Rover host"]
     Source["Source checkout<br/>user repo"]
-    Rover["Rust rover<br/>apps/rover<br/>enrolls, claims, heartbeats"]
+    Rover["Rust rover<br/>apps/rover<br/>enrolls, accepts, heartbeats"]
     Worktree["Operation worktree<br/>isolated loop workspace"]
     Pilot["Local AI CLI pilot<br/>Codex, Claude, Cursor, Copilot, ..."]
   end
@@ -96,8 +96,8 @@ flowchart LR
   Web <-->|/api/v1 rewrite| API
   API <-->|state, dispatch, notifications| DB
   API <-->|upload/download URLs| Assets
-  API <-->|enroll, claim runs, stream config<br/>heartbeats, telemetry, results| Rover
-  API <-->|claim source handoff actions| Rover
+  API <-->|enroll, accept runs, stream config<br/>heartbeats, telemetry, results| Rover
+  API <-->|accept source handoff actions| Rover
 
   Rover -. opens approval .-> Browser
   Source -->|git worktree base| Worktree
@@ -126,9 +126,10 @@ flowchart LR
   missions, labels, reactions, signals, rover enrollment, and connection-token
   endpoints.
 - **`apps/rover`** — Rust CLI (`ufo-cli`): provides the rover command that
-  enrolls by browser approval or code, long-poll claims runs, lets the
-  assigned pilot drive the rover, streams typed messages, uploads a `git
-  diff`, and reports terminal state. One rover can hold many enrollments.
+  enrolls by browser approval or code, stays ready for operation and accepts
+  runs, lets the assigned pilot drive the rover, streams typed messages,
+  uploads a `git diff`, and reports terminal state. One rover can hold many
+  enrollments.
 - **`apps/api/internal/migrate/migrations`, `apps/api/internal/db/queries`** —
   SQL migrations (embedded) and sqlc queries.
 - **[`apps/api/internal/spec/openapi.yaml`](apps/api/internal/spec/openapi.yaml)**
@@ -148,7 +149,7 @@ flowchart LR
 - **Rovers as teammates:** each rover has its own connection token, reports
   available/full/offline status, and receives work only when its tags match.
 - **Pilots drive rovers:** a pilot is a local AI CLI that drives a rover;
-  assign an operation to a pilot and a capable fleet rover claims it. Crews
+  assign an operation to a pilot and a capable fleet rover accepts it. Crews
   can include pilots and humans; assigning to a pilot or pilot-backed crew
   auto-dispatches, while human-only work stays in **backlog**. If the pilot
   has no rover to drive in the fleet, the operation is blocked with a signal
@@ -169,12 +170,12 @@ flowchart LR
   sorting, labels, reactions, sub-operations, relationships, and signals for
   review handoffs or blocked work.
 - **Real-time over PostgreSQL `LISTEN/NOTIFY`:** WebSocket UI updates and
-  rover long-polling share the database as the coordination layer; no extra
-  broker is required.
+  rover monitoring plus Hub push share the database as the coordination
+  layer; no extra broker is required.
 - **Orphaned-run lease:** rover heartbeats; an API sweeper requeues silent
   runs (`UFO_HUB_RUN_LEASE_SECONDS`, default 30).
 - **Multi-instance-safe:** versioned migrator under a `pg_advisory_lock`,
-  claim via `FOR UPDATE SKIP LOCKED`, events ordered by insertion id,
+  accept via `FOR UPDATE SKIP LOCKED`, events ordered by insertion id,
   stateless API.
 
 > **Trust boundary:** anyone in a fleet can dispatch work to connected rovers.
@@ -224,8 +225,8 @@ Use the rover command that matches how you are running UFO:
 
 The dev wrapper runs the local Rust crate with `cargo run`, points at the
 local Hub, and keeps rover work rooted at this checkout. In both forms,
-`enroll` starts the rover after approval. See [Rover CLI](apps/rover/README.md)
-for installed CLI usage.
+`enroll` starts the rover after approval. See
+[Rover CLI](apps/rover/README.md) for installed CLI usage.
 
 **Recommended — Docker for everything except the rover:**
 
@@ -257,7 +258,7 @@ data.
    same terminal. For later runs, use `scripts/dev.sh rover`.
 
    Start the rover from the git checkout you want it to work on. When it sees
-   a checkout, each claimed operation runs in a detached git worktree under
+   a checkout, each accepted operation runs in a detached git worktree under
    the outpost, with current non-ignored local changes copied in, instead of
    editing the running checkout directly.
 
@@ -274,7 +275,7 @@ data.
    For list/status/remove commands and installed CLI usage, see
    [Rover CLI](apps/rover/README.md).
 3. Create a mission, then an operation on the board, assign it to a pilot, and
-   watch the run move `queued → claimed → running → succeeded` live, with its
+   watch the run move `queued → accepted → running → succeeded` live, with its
    diff artifact. The rover shows **available/full/offline** in the Rovers
    panel.
 
@@ -304,14 +305,17 @@ Copy `.env.example` to `.env` to override defaults:
 | `UFO_HUB_URL` | `http://localhost:8080` | rover, web (Hub origin; clients append `/v1`) |
 | `UFO_HUB_BIND` | `:8080` | api |
 | `UFO_HUB_WEB_URL` | _(unset)_ — web UI base URL advertised by the Hub for browser approval flows | api |
-| `UFO_HUB_DATABASE_URL` | `postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable` | api |
+| `UFO_HUB_DATABASE_URL` | _(optional)_ — full PostgreSQL URI or libpq keyword string; when unset, built from official libpq vars `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` / `PGSSLMODE`; default local compose PostgreSQL URL | api |
+| `UFO_HUB_TEST_DATABASE_URL` | _(unset)_ — integration-test DB only; must not be the same database as the runtime Hub URL; tests skip when unset | api / CI |
 | `UFO_HUB_ALLOWED_ORIGINS` | _(unset)_ — CORS + WebSocket origin allowlist; set in production | api |
 | `UFO_HUB_SECURE_COOKIES` | _(unset)_ — set when serving over HTTPS | api |
-| `UFO_HUB_JWT_PRIVATE_KEY` | _(unset)_ — base64 Ed25519 seed/private key for EdDSA access tokens; unset uses a per-process dev key | api |
+| `UFO_HUB_TRUST_PROXY` | _(unset)_ — set when a reverse proxy sets `X-Forwarded-For` / `X-Real-IP` (auth rate limits) | api |
+| `UFO_HUB_JWT_PRIVATE_KEY` | _(required in prod)_ — base64 Ed25519 seed/private key for EdDSA access tokens | api |
+| `UFO_HUB_JWT_ALLOW_EPHEMERAL` | _(unset)_ — set `1` only for local/dev so a missing private key uses a per-process ephemeral key | api |
 | `UFO_HUB_JWT_ACCESS_SECONDS` | `3600` — user access JWT lifetime | api |
 | `UFO_HUB_JWT_ISSUER` | `ufo-hub` — user access JWT issuer | api |
 | `UFO_HUB_JWT_AUDIENCE` | `ufo-api` — user access JWT audience | api |
-| `UFO_HUB_MIN_ROVER_VERSION` | `0.3.1` — oldest rover CLI version allowed to enroll/connect | api |
+| `UFO_HUB_MIN_ROVER_VERSION` | `0.5.0` — oldest rover CLI version allowed to enroll/connect | api |
 | `UFO_HUB_MAX_ROVER_VERSION` | _(unset)_ — optional newest rover CLI version allowed to enroll/connect | api |
 | `UFO_HUB_RUN_LEASE_SECONDS` | `30` | api |
 | `UFO_HUB_LONGPOLL_SECONDS` | `25` | api |
@@ -341,7 +345,7 @@ Copy `.env.example` to `.env` to override defaults:
 | `UFO_ROVER_CONFIG` | `~/.ufo/rovers.json` — local enrollment store | rover |
 | `UFO_ROVER_ENROLLMENT_CODE` | _(optional fallback code from the Rovers panel; used by `rover enroll`)_ | rover |
 | `UFO_ROVER_UNITS` | _(unset)_ — startup units fallback, 1-100, until hub config is available (`--units`) | rover |
-| `UFO_ROVER_RETRY_SECONDS` | `1` — wait after a failed claim before retrying | rover |
+| `UFO_ROVER_RETRY_SECONDS` | `1` — wait after a failed accept before retrying | rover |
 | `UFO_ROVER_HEARTBEAT_SECONDS` | `5` — run lease-renewal interval | rover |
 | `UFO_ROVER_ASSET_UPLOAD_MAX_BYTES` | `104857600` — max bytes for each rover-uploaded referenced file | rover |
 | `UFO_ROVER_ASSET_UPLOAD_MAX_FILES` | `20` — max referenced files a rover uploads for one run | rover |
@@ -356,8 +360,9 @@ Copy `.env.example` to `.env` to override defaults:
 - Sign-in works but browser calls fail: set `UFO_HUB_ALLOWED_ORIGINS` to the
   web origin and use `UFO_HUB_SECURE_COOKIES=1` only behind HTTPS.
 - Rover does not enroll: confirm the Hub URL points at the API origin, then
-  approve enrollment in the browser. Use the command form from the table above.
-- Rover is online but does not claim work: confirm the operation is assigned
+  approve enrollment in the browser. Use the command form from the table
+  above.
+- Rover is online but does not accept work: confirm the operation is assigned
   to a pilot, the pilot CLI is on the rover `PATH`, and tags match.
 - Intentionally discard local dev data: `scripts/dev.sh down -v &&
   scripts/dev.sh up` deletes the Docker database volume. Do this only after

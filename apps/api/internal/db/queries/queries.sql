@@ -81,6 +81,21 @@ JOIN memberships m ON m.fleet_id = w.id
 WHERE m.user_id = sqlc.arg(user_id)
 ORDER BY w.id;
 
+-- name: UsersHaveMutualFleet :one
+SELECT EXISTS (
+  SELECT 1
+  FROM memberships a
+  JOIN memberships b ON a.fleet_id = b.fleet_id
+  WHERE a.user_id = sqlc.arg(viewer_id) AND b.user_id = sqlc.arg(subject_id)
+);
+
+-- name: ListMutualFleets :many
+SELECT f.id, f.public_id, f.name, f.kind, f.metadata, f.created_at, f.updated_at
+FROM fleets f
+JOIN memberships a ON a.fleet_id = f.id AND a.user_id = sqlc.arg(viewer_id)
+JOIN memberships b ON b.fleet_id = f.id AND b.user_id = sqlc.arg(subject_id)
+ORDER BY f.name, f.id;
+
 -- name: IsMember :one
 SELECT EXISTS(
     SELECT 1 FROM memberships WHERE user_id = sqlc.arg(user_id) AND fleet_id = sqlc.arg(fleet_id)
@@ -241,7 +256,7 @@ DELETE FROM rovers WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 SELECT r.id, r.public_id, r.fleet_id, r.name, r.enrollment_code_id, r.token_hash, r.units, r.auto_tags, r.tags, r.metadata, r.created_at, r.updated_at, r.last_seen_at,
        (
            SELECT COUNT(*)::bigint FROM runs x
-           WHERE x.rover_id = r.id AND x.state IN ('claimed', 'starting', 'running')
+           WHERE x.rover_id = r.id AND x.status IN ('accepted', 'starting', 'running')
        ) AS running_units
 FROM rovers r
 WHERE r.fleet_id = sqlc.arg(fleet_id)
@@ -271,6 +286,13 @@ UPDATE operations SET required_tags = sqlc.arg(required_tags), excluded_tags = s
 
 -- name: SetOperationTitle :exec
 UPDATE operations SET title = sqlc.arg(title) WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- Move an operation to another mission in the same fleet (new sequence required).
+-- name: SetOperationMission :one
+UPDATE operations
+SET mission_id = sqlc.arg(mission_id), sequence = sqlc.arg(sequence)
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
+RETURNING id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, metadata, created_by, created_at, updated_at, started_at, finished_at;
 
 -- name: SetOperationBody :exec
 UPDATE operations SET body = sqlc.arg(body) WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
@@ -304,7 +326,7 @@ UPDATE operations SET orchestrating = sqlc.arg(orchestrating) WHERE id = sqlc.ar
 SELECT COUNT(*)::bigint AS count FROM operations o
 WHERE o.main_operation_id = sqlc.arg(main_operation_id)
   AND (o.status IN ('backlog', 'todo', 'in_progress')
-       OR EXISTS (SELECT 1 FROM runs r WHERE r.operation_id = o.id AND r.state IN ('queued','claimed','starting','running')));
+       OR EXISTS (SELECT 1 FROM runs r WHERE r.operation_id = o.id AND r.status IN ('queued','accepted','starting','running')));
 
 -- name: LatestDiffArtifactForOperation :one
 SELECT a.id, a.public_id, a.run_id, a.asset_id, a.kind, a.name, a.content, a.content_preview, a.byte_size, a.metadata, a.created_at
@@ -312,18 +334,18 @@ FROM artifacts a JOIN runs r ON a.run_id = r.id
 WHERE r.operation_id = sqlc.arg(operation_id) AND a.kind = 'diff' ORDER BY a.id DESC LIMIT 1;
 
 -- name: OperationHasActiveRun :one
-SELECT EXISTS(SELECT 1 FROM runs WHERE operation_id = sqlc.arg(operation_id) AND state IN ('queued','claimed','starting','running'));
+SELECT EXISTS(SELECT 1 FROM runs WHERE operation_id = sqlc.arg(operation_id) AND status IN ('queued','accepted','starting','running'));
 
--- Active run state per operation, batched for board/detail DTOs.
--- name: ActiveRunStatesForOperations :many
-SELECT operation_id, state FROM runs
-WHERE operation_id = ANY(sqlc.arg(operation_ids)::bigint[]) AND state IN ('queued','claimed','starting','running');
+-- Active run status per operation, batched for board/detail DTOs.
+-- name: ActiveRunStatusesForOperations :many
+SELECT operation_id, status FROM runs
+WHERE operation_id = ANY(sqlc.arg(operation_ids)::bigint[]) AND status IN ('queued','accepted','starting','running');
 
--- Active run counts split by queue/work state.
--- name: CountActiveRunsByState :many
-SELECT state, COUNT(DISTINCT operation_id)::bigint AS count FROM runs
-WHERE fleet_id = sqlc.arg(fleet_id) AND state IN ('queued','claimed','starting','running')
-GROUP BY state;
+-- Active run counts split by queue/work status.
+-- name: CountActiveRunsByStatus :many
+SELECT status, COUNT(DISTINCT operation_id)::bigint AS count FROM runs
+WHERE fleet_id = sqlc.arg(fleet_id) AND status IN ('queued','accepted','starting','running')
+GROUP BY status;
 
 -- Sub-operation progress per main operation, batched for the board.
 -- name: SubOperationProgress :many
@@ -349,6 +371,16 @@ FROM operations WHERE id = sqlc.arg(id);
 SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, metadata, created_by, created_at, updated_at, started_at, finished_at FROM operations
 WHERE fleet_id = sqlc.arg(fleet_id) AND main_operation_id IS NULL
 ORDER BY id DESC;
+
+-- name: ListOperationsByAssignee :many
+SELECT id, public_id, fleet_id, mission_id, sequence, main_operation_id, title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, metadata, created_by, created_at, updated_at, started_at, finished_at FROM operations
+WHERE fleet_id = sqlc.arg(fleet_id)
+  AND main_operation_id IS NULL
+  AND assignee_type = sqlc.arg(assignee_type)
+  AND assignee_id = sqlc.arg(assignee_id)
+  AND (sqlc.arg(include_archived)::bool OR archived = FALSE)
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
 
 -- Board: one status column, keyset-paginated. mission = 0 → all missions;
 -- before = 0 → first page (newest). Index: operations_board_idx.
@@ -399,8 +431,8 @@ UPDATE operations
 SET status = sqlc.arg(status),
     started_at = CASE WHEN sqlc.arg(status) = 'in_progress' AND started_at IS NULL THEN now() ELSE started_at END,
     finished_at = CASE
-        WHEN sqlc.arg(status) IN ('done', 'cancelled') THEN coalesce(finished_at, now())
-        WHEN sqlc.arg(status) NOT IN ('done', 'cancelled') THEN NULL
+        WHEN sqlc.arg(status) IN ('done', 'canceled') THEN coalesce(finished_at, now())
+        WHEN sqlc.arg(status) NOT IN ('done', 'canceled') THEN NULL
         ELSE finished_at
     END
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
@@ -436,14 +468,14 @@ SELECT substr(t, 7)::text AS kind,
        coalesce(bool_or(
          now() - r.last_seen_at < make_interval(secs => sqlc.arg(online_window_seconds)::float8)
          AND (SELECT COUNT(*) FROM runs x
-              WHERE x.rover_id = r.id AND x.state IN ('claimed','starting','running')) < r.units::bigint
+              WHERE x.rover_id = r.id AND x.status IN ('accepted','starting','running')) < r.units::bigint
        ), FALSE)::bool AS has_free
 FROM rovers r, unnest(r.auto_tags || r.tags) AS t
 WHERE r.fleet_id = sqlc.arg(fleet_id) AND t LIKE 'pilot:%'
 GROUP BY 1;
 
 -- name: FailedPilotKindsForOperation :many
-SELECT DISTINCT pilot FROM runs WHERE operation_id = sqlc.arg(operation_id) AND state IN ('blocked','failed');
+SELECT DISTINCT pilot FROM runs WHERE operation_id = sqlc.arg(operation_id) AND status IN ('blocked','failed');
 
 -- ========================== crews ============================
 
@@ -534,7 +566,7 @@ WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND recipient_user_id 
 UPDATE signals SET archived = TRUE, read = TRUE
 WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND recipient_user_id = sqlc.arg(recipient_user_id);
 
--- Self-heal: archive open action-required signals once an operation leaves that state.
+-- Self-heal: archive open action-required signals once an operation leaves that status.
 -- name: ArchiveActionRequiredForOperation :exec
 UPDATE signals SET archived = TRUE
 WHERE operation_id = sqlc.arg(operation_id) AND severity = 'action_required' AND archived = FALSE;
@@ -571,7 +603,7 @@ SELECT id, public_id, fleet_id, name, key, next_sequence, metadata, created_at, 
 -- name: CreateRun :one
 INSERT INTO runs (fleet_id, operation_id, mission_id, command, pilot, session_id, required_rover_id)
 VALUES (sqlc.arg(fleet_id), sqlc.arg(operation_id), sqlc.arg(mission_id), sqlc.arg(command), sqlc.arg(pilot), sqlc.arg(session_id), sqlc.arg(required_rover_id))
-RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at;
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at;
 
 -- name: SetRunSession :exec
 UPDATE runs SET session_id = sqlc.arg(session_id) WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
@@ -584,7 +616,7 @@ UPDATE runs SET requested_status = sqlc.arg(requested_status) WHERE id = sqlc.ar
 
 -- name: MergeRunMetadata :one
 UPDATE runs SET metadata = metadata || sqlc.arg(metadata)::jsonb WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
-RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at;
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at;
 
 -- name: SetOperationSession :exec
 UPDATE operations SET pilot_session_id = sqlc.arg(pilot_session_id), pilot_session_kind = sqlc.arg(pilot_session_kind), pilot_session_rover_id = sqlc.arg(pilot_session_rover_id) WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
@@ -593,61 +625,79 @@ UPDATE operations SET pilot_session_id = sqlc.arg(pilot_session_id), pilot_sessi
 SELECT last_seen_at FROM rovers WHERE id = sqlc.arg(id);
 
 -- name: GetRun :one
-SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 
 -- name: ListRuns :many
-SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs WHERE fleet_id = sqlc.arg(fleet_id) ORDER BY id DESC;
 
 -- name: ListRunsByOperation :many
-SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs WHERE operation_id = sqlc.arg(operation_id) ORDER BY id DESC;
 
 -- Atomically grab the oldest queued run in a fleet and attribute it to the
--- claiming rover.
--- Claim the oldest queued run the rover is allowed and able to run: the rover
+-- accepting rover.
+-- Accept the oldest queued run the rover is allowed and able to run: the rover
 -- must advertise the run's pilot kind, the operation deny list must not overlap
--- its tags (checked first), and its allow list must be a subset.
--- name: ClaimNextRun :one
+-- its tags (checked first), and its allow list must be a subset. Hub enforces
+-- rover.units: the accepting rover must have fewer active runs than units.
+-- name: AcceptNextRun :one
 UPDATE runs
-SET state = 'claimed', heartbeat_at = now(), rover_id = sqlc.arg(rover_id)
+SET status = 'accepted', heartbeat_at = now(), rover_id = sqlc.arg(rover_id)
 WHERE id = (
     SELECT r.id FROM runs r
     JOIN operations o ON o.id = r.operation_id
-    WHERE r.state = 'queued' AND r.fleet_id = sqlc.arg(fleet_id)
+    JOIN rovers rv ON rv.id = sqlc.arg(rover_id) AND rv.fleet_id = sqlc.arg(fleet_id)
+    WHERE r.status = 'queued' AND r.fleet_id = sqlc.arg(fleet_id)
       AND (r.required_rover_id IS NULL OR r.required_rover_id = sqlc.arg(rover_id)) -- session affinity pin
       AND ('pilot:' || r.pilot) = ANY(sqlc.arg(rover_tags)::text[]) -- pilot capability tag
       AND NOT (o.excluded_tags && sqlc.arg(rover_tags)::text[])      -- deny boundary
       AND o.required_tags <@ sqlc.arg(rover_tags)::text[]            -- allow list
+      AND (
+          SELECT COUNT(*)::bigint FROM runs active
+          WHERE active.rover_id = sqlc.arg(rover_id)
+            AND active.status IN ('accepted', 'starting', 'running')
+      ) < rv.units::bigint
     ORDER BY r.id
     FOR UPDATE of r skip locked
     LIMIT 1
 )
-RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at;
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at;
 
--- name: SetRunState :one
+-- name: SetRunStatus :one
 UPDATE runs
-SET state = sqlc.arg(state)
-WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND state IN ('claimed', 'starting', 'running')
-RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at;
+SET status = sqlc.arg(status)
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND status IN ('accepted', 'starting', 'running')
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at;
+
+-- name: MarkRunFinalized :one
+UPDATE runs
+SET status = sqlc.arg(status), finalized_at = now()
+WHERE id = sqlc.arg(id)
+  AND fleet_id = sqlc.arg(fleet_id)
+  AND finalized_at IS NULL
+  AND status IN ('accepted', 'starting', 'running')
+  AND sqlc.arg(status) IN ('succeeded', 'failed')
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at;
 
 -- name: CancelRun :one
 UPDATE runs
-SET state = 'canceled'
-WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND state IN ('claimed', 'starting', 'running')
-RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at;
+SET status = 'canceled'
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND status IN ('accepted', 'starting', 'running') AND finalized_at IS NULL
+RETURNING id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at;
 
 -- name: Heartbeat :one
 UPDATE runs SET heartbeat_at = now()
-WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND state IN ('claimed', 'starting', 'running')
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id) AND status IN ('accepted', 'starting', 'running') AND finalized_at IS NULL
 RETURNING id;
 
 -- Requeue runs whose rover went silent (heartbeat older than the lease).
 -- name: RequeueExpiredRuns :many
 UPDATE runs
-SET state = 'queued', heartbeat_at = NULL, rover_id = NULL
-WHERE state IN ('claimed', 'starting', 'running')
+SET status = 'queued', heartbeat_at = NULL, rover_id = NULL
+WHERE status IN ('accepted', 'starting', 'running')
+  AND finalized_at IS NULL
   AND heartbeat_at IS NOT NULL
   AND heartbeat_at < now() - make_interval(secs => sqlc.arg(lease_seconds)::float8)
 RETURNING id;
@@ -668,39 +718,45 @@ SELECT EXISTS (SELECT 1 FROM run_events WHERE run_id = sqlc.arg(run_id) AND kind
 -- name: CreateAsset :one
 INSERT INTO assets (
     public_id, fleet_id, object_key, filename, content_type, byte_size, checksums,
-    storage_backend, state, metadata, created_by
+    storage_backend, status, metadata, created_by
 )
 VALUES (
   sqlc.arg(public_id), sqlc.arg(fleet_id), sqlc.arg(object_key), sqlc.arg(filename),
   sqlc.arg(content_type), sqlc.arg(byte_size), sqlc.arg(checksums), sqlc.arg(storage_backend),
-  sqlc.arg(state), sqlc.arg(metadata), sqlc.arg(created_by)
+  sqlc.arg(status), sqlc.arg(metadata), sqlc.arg(created_by)
 )
-RETURNING id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at;
+RETURNING id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at;
 
 -- name: GetAssetByPublicID :one
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at
-FROM assets WHERE public_id = sqlc.arg(public_id) AND state = 'ready' AND deleted_at IS NULL;
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at
+FROM assets WHERE public_id = sqlc.arg(public_id) AND status = 'ready' AND deleted_at IS NULL;
 
 -- name: GetAssetForDeleteByPublicID :one
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at
-FROM assets WHERE public_id = sqlc.arg(public_id) AND state IN ('pending', 'ready') AND deleted_at IS NULL;
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at
+FROM assets WHERE public_id = sqlc.arg(public_id) AND status IN ('pending', 'ready') AND deleted_at IS NULL;
 
 -- name: GetAssetByID :one
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at
-FROM assets WHERE id = sqlc.arg(id) AND state = 'ready' AND deleted_at IS NULL;
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at
+FROM assets WHERE id = sqlc.arg(id) AND status = 'ready' AND deleted_at IS NULL;
 
 -- name: ListAssetsByPublicIDs :many
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at FROM assets
-WHERE fleet_id = sqlc.arg(fleet_id) AND public_id = ANY(sqlc.arg(asset_public_ids)::uuid[]) AND state = 'ready' AND deleted_at IS NULL;
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at FROM assets
+WHERE fleet_id = sqlc.arg(fleet_id) AND public_id = ANY(sqlc.arg(asset_public_ids)::uuid[]) AND status = 'ready' AND deleted_at IS NULL;
 
 -- name: ListReadyAssetsByPublicIDs :many
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at FROM assets
-WHERE public_id = ANY(sqlc.arg(asset_public_ids)::uuid[]) AND state = 'ready' AND deleted_at IS NULL;
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at FROM assets
+WHERE public_id = ANY(sqlc.arg(asset_public_ids)::uuid[]) AND status = 'ready' AND deleted_at IS NULL;
 
 -- name: ListReadyAssetsByOperationID :many
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at FROM assets
-WHERE fleet_id = sqlc.arg(fleet_id) AND metadata->>'operation_id' = sqlc.arg(operation_id)::text AND state = 'ready' AND deleted_at IS NULL
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at FROM assets
+WHERE fleet_id = sqlc.arg(fleet_id) AND metadata->>'operation_id' = sqlc.arg(operation_id)::text AND status = 'ready' AND deleted_at IS NULL
 ORDER BY id;
+
+-- name: ListReadyAssetsByFleet :many
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at FROM assets
+WHERE fleet_id = sqlc.arg(fleet_id) AND status = 'ready' AND deleted_at IS NULL
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
 
 -- name: AttachAssetsToOperation :many
 UPDATE assets
@@ -708,30 +764,30 @@ SET metadata = metadata || jsonb_build_object('operation_id', sqlc.arg(operation
 WHERE public_id = ANY(sqlc.arg(asset_public_ids)::uuid[])
   AND fleet_id = sqlc.arg(fleet_id)
   AND created_by = sqlc.arg(created_by)
-  AND state = 'ready'
+  AND status = 'ready'
   AND deleted_at IS NULL
-RETURNING id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at;
+RETURNING id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at;
 
 -- name: GetPendingAssetByPublicID :one
-SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at
-FROM assets WHERE public_id = sqlc.arg(public_id) AND state = 'pending' AND deleted_at IS NULL;
+SELECT id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at
+FROM assets WHERE public_id = sqlc.arg(public_id) AND status = 'pending' AND deleted_at IS NULL;
 
 -- name: DeletePendingAsset :exec
 UPDATE assets SET deleted_at = now()
-WHERE id = sqlc.arg(id) AND state = 'pending' AND deleted_at IS NULL;
+WHERE id = sqlc.arg(id) AND status = 'pending' AND deleted_at IS NULL;
 
 -- name: DeleteAsset :exec
-UPDATE assets SET state = 'deleted', deleted_at = now()
-WHERE id = sqlc.arg(id) AND state IN ('pending', 'ready') AND deleted_at IS NULL;
+UPDATE assets SET status = 'deleted', deleted_at = now()
+WHERE id = sqlc.arg(id) AND status IN ('pending', 'ready') AND deleted_at IS NULL;
 
 -- name: SetAssetReady :one
-UPDATE assets SET byte_size = sqlc.arg(byte_size), checksums = sqlc.arg(checksums), metadata = sqlc.arg(metadata), state = 'ready'
-WHERE id = sqlc.arg(id) AND state = 'pending' AND deleted_at IS NULL
-RETURNING id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, state, metadata, created_by, created_at, updated_at, deleted_at;
+UPDATE assets SET byte_size = sqlc.arg(byte_size), checksums = sqlc.arg(checksums), metadata = sqlc.arg(metadata), status = 'ready'
+WHERE id = sqlc.arg(id) AND status = 'pending' AND deleted_at IS NULL
+RETURNING id, public_id, fleet_id, object_key, filename, content_type, byte_size, checksums, storage_backend, status, metadata, created_by, created_at, updated_at, deleted_at;
 
 -- name: MergeAssetChecksums :exec
 UPDATE assets SET checksums = COALESCE(checksums, '{}'::jsonb) || sqlc.arg(checksums)::jsonb
-WHERE id = sqlc.arg(id) AND state = 'ready' AND deleted_at IS NULL;
+WHERE id = sqlc.arg(id) AND status = 'ready' AND deleted_at IS NULL;
 
 -- name: AppendArtifact :one
 INSERT INTO artifacts (run_id, asset_id, kind, name, content, content_preview, byte_size, metadata)
@@ -778,24 +834,24 @@ FROM operations WHERE public_id = sqlc.arg(public_id);
 SELECT id FROM runs WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id);
 
 -- name: GetRunByPublicID :one
-SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs WHERE public_id = sqlc.arg(public_id);
 
 -- name: GetRunForRover :one
-SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs
 WHERE public_id = sqlc.arg(public_id)
   AND fleet_id = sqlc.arg(fleet_id)
   AND rover_id = sqlc.arg(rover_id)
-  AND state IN ('claimed','starting','running');
+  AND status IN ('accepted','starting','running');
 
 -- name: ListActiveRunOperationsForRover :many
 SELECT operation_id, command FROM runs
 WHERE rover_id = sqlc.arg(rover_id) AND fleet_id = sqlc.arg(fleet_id)
-  AND state IN ('claimed','starting','running');
+  AND status IN ('accepted','starting','running');
 
 -- name: GetRunIDForRover :one
--- Resolve a run owned by the calling rover (claimed by it), so one rover can't
+-- Resolve a run owned by the calling rover (accepted by it), so one rover can't
 -- mutate another rover's run.
 SELECT id FROM runs WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id) AND rover_id = sqlc.arg(rover_id);
 
@@ -852,6 +908,9 @@ SELECT id, public_id FROM runs WHERE id = ANY(sqlc.arg(ids)::bigint[]);
 
 -- name: PublicIDsForRovers :many
 SELECT id, public_id FROM rovers WHERE id = ANY(sqlc.arg(ids)::bigint[]);
+
+-- name: PublicIDsForRoutines :many
+SELECT id, public_id FROM routines WHERE id = ANY(sqlc.arg(ids)::bigint[]);
 
 -- ============================ labels =============================
 
@@ -926,11 +985,18 @@ FROM routines WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(flee
 SELECT id, public_id, fleet_id, mission_id, title, body, metadata, operation_metadata, created_by, created_at, updated_at, next_pulse_at, last_pulsed_at
 FROM routines WHERE public_id = sqlc.arg(public_id);
 
--- name: ClaimDueRoutinePulses :many
+-- name: ListDueRoutines :many
 SELECT id, public_id, fleet_id, mission_id, title, body, metadata, operation_metadata, created_by, created_at, updated_at, next_pulse_at, last_pulsed_at FROM routines
 WHERE next_pulse_at IS NOT NULL AND next_pulse_at <= sqlc.arg(now)
 ORDER BY next_pulse_at, id
-LIMIT sqlc.arg('limit')
+LIMIT sqlc.arg('limit');
+
+-- name: LockDueRoutine :one
+SELECT id, public_id, fleet_id, mission_id, title, body, metadata, operation_metadata, created_by, created_at, updated_at, next_pulse_at, last_pulsed_at FROM routines
+WHERE id = sqlc.arg(id)
+  AND fleet_id = sqlc.arg(fleet_id)
+  AND next_pulse_at IS NOT NULL
+  AND next_pulse_at <= sqlc.arg(now)
 FOR UPDATE SKIP LOCKED;
 
 -- name: UpdateRoutinePulse :exec
@@ -939,6 +1005,48 @@ WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
 
 -- name: DeleteRoutine :exec
 DELETE FROM routines WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- ============================ pulses =============================
+
+-- name: CreatePulse :one
+INSERT INTO pulses (fleet_id, routine_id, operation_id, status, metadata)
+VALUES (
+  sqlc.arg(fleet_id), sqlc.arg(routine_id), sqlc.arg(operation_id), sqlc.arg(status), sqlc.arg(metadata)
+)
+RETURNING id, public_id, fleet_id, routine_id, operation_id, status, metadata, created_at, updated_at, finished_at;
+
+-- name: FinishPulse :one
+UPDATE pulses
+SET operation_id = sqlc.arg(operation_id),
+    status = sqlc.arg(status),
+    metadata = sqlc.arg(metadata),
+    finished_at = sqlc.arg(finished_at)
+WHERE id = sqlc.arg(id) AND fleet_id = sqlc.arg(fleet_id)
+RETURNING id, public_id, fleet_id, routine_id, operation_id, status, metadata, created_at, updated_at, finished_at;
+
+-- name: ListPulses :many
+SELECT id, public_id, fleet_id, routine_id, operation_id, status, metadata, created_at, updated_at, finished_at
+FROM pulses
+WHERE fleet_id = sqlc.arg(fleet_id)
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
+
+-- name: ListPulsesByRoutine :many
+SELECT id, public_id, fleet_id, routine_id, operation_id, status, metadata, created_at, updated_at, finished_at
+FROM pulses
+WHERE routine_id = sqlc.arg(routine_id) AND fleet_id = sqlc.arg(fleet_id)
+ORDER BY id DESC
+LIMIT sqlc.arg('limit');
+
+-- name: GetPulseByPublicID :one
+SELECT id, public_id, fleet_id, routine_id, operation_id, status, metadata, created_at, updated_at, finished_at
+FROM pulses
+WHERE public_id = sqlc.arg(public_id) AND fleet_id = sqlc.arg(fleet_id);
+
+-- name: GetPulseByPublicIDAnyFleet :one
+SELECT id, public_id, fleet_id, routine_id, operation_id, status, metadata, created_at, updated_at, finished_at
+FROM pulses
+WHERE public_id = sqlc.arg(public_id);
 
 -- ====================== operation relations ========================
 
@@ -965,9 +1073,9 @@ JOIN missions m ON m.id = o.mission_id
 WHERE r.source_id = sqlc.arg(operation_id) OR r.target_id = sqlc.arg(operation_id)
 ORDER BY r.id;
 
--- Typeahead for linking operations: match title, numeric sequence, or KEY-123 code.
--- name: SearchOperations :many
-SELECT o.public_id, o.title, o.status, o.sequence, m.public_id AS mission_id
+-- List filter `q`: match title, numeric sequence, or KEY-123 code (shared list query).
+-- name: ListOperationsByQuery :many
+SELECT o.id, o.public_id, o.fleet_id, o.mission_id, o.sequence, o.main_operation_id, o.title, o.body, o.status, o.priority, o.assignee_type, o.assignee_id, o.assignee_pilot_kind, o.required_tags, o.excluded_tags, o.start_date, o.due_date, o.pilot_session_id, o.pilot_session_kind, o.pilot_session_rover_id, o.orchestrating, o.archived, o.metadata, o.created_by, o.created_at, o.updated_at, o.started_at, o.finished_at
 FROM operations o JOIN missions m ON m.id = o.mission_id
 WHERE o.fleet_id = sqlc.arg(fleet_id)
   AND (
@@ -976,17 +1084,17 @@ WHERE o.fleet_id = sqlc.arg(fleet_id)
     OR (sqlc.arg(code_query)::text <> '' AND upper(m.key || '-' || cast(o.sequence AS text)) LIKE sqlc.arg(code_query) || '%')
   )
 ORDER BY o.id DESC
-LIMIT 20;
+LIMIT sqlc.arg('limit');
 
 -- ========================= source actions =========================
 
 -- name: LatestSourceRunForOperation :one
-SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, state, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at
+SELECT id, public_id, fleet_id, operation_id, mission_id, rover_id, required_rover_id, pilot, command, status, session_id, needs_input, requested_status, metadata, created_at, updated_at, heartbeat_at, finalized_at
 FROM runs r
 WHERE r.operation_id = sqlc.arg(operation_id)
   AND r.fleet_id = sqlc.arg(fleet_id)
   AND r.rover_id IS NOT NULL
-  AND r.state = 'succeeded'
+  AND r.status = 'succeeded'
   AND EXISTS (
     SELECT 1 FROM artifacts a
     WHERE a.run_id = r.id AND a.kind = 'diff'
@@ -1002,32 +1110,32 @@ VALUES (
   sqlc.arg(fleet_id), sqlc.arg(operation_id), sqlc.arg(run_id), sqlc.arg(rover_id),
   sqlc.arg(kind), sqlc.arg(branch_name), sqlc.arg(created_by)
 )
-RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, state, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, claimed_at, finished_at;
+RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
 
 -- name: ListSourceActionsForOperation :many
-SELECT id, public_id, fleet_id, operation_id, run_id, rover_id, kind, state, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, claimed_at, finished_at
+SELECT id, public_id, fleet_id, operation_id, run_id, rover_id, kind, status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at
 FROM source_actions WHERE operation_id = sqlc.arg(operation_id) ORDER BY id DESC;
 
--- name: ClaimNextSourceAction :one
+-- name: AcceptNextSourceAction :one
 UPDATE source_actions
-SET state = 'claimed', claimed_at = now()
+SET status = 'accepted', accepted_at = now()
 WHERE id = (
     SELECT pending.id FROM source_actions pending
     WHERE pending.fleet_id = sqlc.arg(fleet_id)
       AND pending.rover_id = sqlc.arg(rover_id)
       AND (
-        pending.state = 'queued'
-        OR (pending.state = 'claimed' AND pending.claimed_at < now() - make_interval(secs => sqlc.arg(stale_seconds)::float8))
+        pending.status = 'queued'
+        OR (pending.status = 'accepted' AND pending.accepted_at < now() - make_interval(secs => sqlc.arg(stale_seconds)::float8))
       )
     ORDER BY pending.id
     FOR UPDATE OF pending SKIP LOCKED
     LIMIT 1
 )
-RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, state, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, claimed_at, finished_at;
+RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
 
 -- name: CompleteSourceAction :one
 UPDATE source_actions
-SET state = sqlc.arg(state),
+SET status = sqlc.arg(status),
     branch_name = sqlc.arg(branch_name),
     commit_sha = sqlc.arg(commit_sha),
     base_sha = sqlc.arg(base_sha),
@@ -1038,18 +1146,18 @@ SET state = sqlc.arg(state),
 WHERE public_id = sqlc.arg(public_id)
   AND fleet_id = sqlc.arg(fleet_id)
   AND rover_id = sqlc.arg(rover_id)
-  AND state = 'claimed'
-RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, state, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, claimed_at, finished_at;
+  AND status = 'accepted'
+RETURNING id, public_id, fleet_id, operation_id, run_id, rover_id, kind, status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, created_by, created_at, updated_at, accepted_at, finished_at;
 
 -- ========================= pull requests =========================
 
 -- name: CreatePullRequest :one
 INSERT INTO pull_requests (operation_id, url, title, number, metadata, created_by)
 VALUES (sqlc.arg(operation_id), sqlc.arg(url), sqlc.arg(title), sqlc.arg(number), sqlc.arg(metadata), sqlc.arg(created_by))
-RETURNING id, public_id, operation_id, url, title, state, number, metadata, created_by, created_at, updated_at;
+RETURNING id, public_id, operation_id, url, title, status, number, metadata, created_by, created_at, updated_at;
 
 -- name: ListPullRequestsForOperation :many
-SELECT id, public_id, operation_id, url, title, state, number, metadata, created_by, created_at, updated_at FROM pull_requests WHERE operation_id = sqlc.arg(operation_id) ORDER BY id;
+SELECT id, public_id, operation_id, url, title, status, number, metadata, created_by, created_at, updated_at FROM pull_requests WHERE operation_id = sqlc.arg(operation_id) ORDER BY id;
 
 -- name: DeletePullRequest :exec
 DELETE FROM pull_requests p USING operations o

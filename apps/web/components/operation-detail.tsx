@@ -18,10 +18,12 @@ import { TelemetryDialog } from "@/components/telemetry-dialog";
 import { SignalsMenu } from "@/components/signals-menu";
 import { SelectionActionsMenu, copyText, selectedTextWithin } from "@/components/selection-actions-menu";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TagEditor } from "@/components/tag-editor";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -33,12 +35,12 @@ import { elapsed } from "@/lib/timeline";
 import { DRAFT_SAVE_DELAY_SECONDS, formatTimestamp, useAssetPanelOpen, useAssetViewMode, useCommsOrder, useTimeFormat, type AssetViewMode, type TimeFormat } from "@/lib/view";
 import type { Asset, Comment, OperationReference, Operation, Reaction, Relation, Run, SourceAction } from "@/lib/types";
 
-const ACTIVE = new Set(["queued", "claimed", "starting", "running"]);
-const isActive = (r: Run) => ACTIVE.has(r.state);
-const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"];
+const ACTIVE = new Set(["queued", "accepted", "starting", "running"]);
+const isActive = (r: Run) => ACTIVE.has(r.status);
+const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "canceled"];
 const STATUS_LABEL: Record<string, string> = {
   backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review",
-  done: "Done", blocked: "Blocked", cancelled: "Cancelled",
+  done: "Done", blocked: "Blocked", canceled: "Canceled",
 };
 const EMOJI = ["👍", "👎", "👀", "✅", "🙏", "🙌", "🎉", "💯", "❤️", "🔥", "🚀", "🙂", "☹️", "🙃", "😂", "🤣", "😅", "🤔", "🫠", "😢"];
 const COMMENT_PREVIEW_LIMIT = 30;
@@ -53,10 +55,33 @@ const DATE_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug
 const REPLY_TEXTAREA_MAX_HEIGHT = 160;
 type AssetSourceFilter = "all" | AssetSource;
 type ActivityCommentRow = { comment: Comment; pilotStatus?: string; captainSplit?: string };
-type ActivityDisplayRow = ActivityCommentRow | { commentGroup: ActivityCommentRow[]; state: "queued" | "working" };
+type ActivityDisplayRow = ActivityCommentRow | { commentGroup: ActivityCommentRow[]; status: "queued" | "working" };
 
 function worktreeValue(metadata: Record<string, unknown> | undefined): boolean | undefined {
   return typeof metadata?.worktree_enabled === "boolean" ? metadata.worktree_enabled : undefined;
+}
+
+type MissionMoveNotice = {
+  from_key: string;
+  from_name?: string;
+  to_key?: string;
+  to_name?: string;
+  at?: string;
+};
+
+function missionMoveFromMetadata(metadata: Record<string, unknown> | undefined): MissionMoveNotice | null {
+  const raw = metadata?.mission_move;
+  if (!raw || typeof raw !== "object") return null;
+  const move = raw as Record<string, unknown>;
+  const fromKey = typeof move.from_key === "string" ? move.from_key : "";
+  if (!fromKey) return null;
+  return {
+    from_key: fromKey,
+    from_name: typeof move.from_name === "string" ? move.from_name : undefined,
+    to_key: typeof move.to_key === "string" ? move.to_key : undefined,
+    to_name: typeof move.to_name === "string" ? move.to_name : undefined,
+    at: typeof move.at === "string" ? move.at : undefined,
+  };
 }
 
 function operationEditDraftKey(operationId: string) {
@@ -146,6 +171,10 @@ export function OperationDetail() {
   const [commentsMore, setCommentsMore] = useState(false);
   const [loadingOlderComments, setLoadingOlderComments] = useState(false);
   const [addingSubOperation, setAddingSubOperation] = useState(false);
+  const [pendingMissionId, setPendingMissionId] = useState<string | null>(null);
+  const [missionMoveConfirm, setMissionMoveConfirm] = useState("");
+  const [missionMoving, setMissionMoving] = useState(false);
+  const [missionMoveError, setMissionMoveError] = useState<string | null>(null);
   const { theme, resolvedTheme, setTheme } = useTheme();
   const { timeFormat } = useTimeFormat();
   const { commsOrder, setCommsOrder } = useCommsOrder();
@@ -299,7 +328,7 @@ export function OperationDetail() {
     }
     let active = true;
     setAssetsLoading(true);
-    getJSON<Asset[]>(`/api/v1/operations/${id}/assets`).then((assets) => {
+    getJSON<Asset[]>(`/api/v1/assets?operation_id=${id}`).then((assets) => {
       if (!active) return;
       const next = assets ?? [];
       setOperationAssets(next);
@@ -379,6 +408,26 @@ export function OperationDetail() {
   const operationId = d.operation.id;
   const operationTitle = d.operation.title;
   const operationMission = app.missions.find((m) => m.id === d.operation.mission_id);
+  const currentOperationCode = operationCode(d.operation, app.missions);
+  const pendingMission = pendingMissionId
+    ? app.missions.find((m) => m.id === pendingMissionId) ?? null
+    : null;
+  const missionMoveConfirmOk =
+    missionMoveConfirm.trim().toUpperCase() === currentOperationCode.toUpperCase();
+  const missionMoveNotice = missionMoveFromMetadata(d.operation.metadata);
+  async function confirmMissionMove() {
+    if (!pendingMissionId || !missionMoveConfirmOk || missionMoving) return;
+    setMissionMoving(true);
+    setMissionMoveError(null);
+    const ok = await app.setOperationMission(operationId, pendingMissionId);
+    setMissionMoving(false);
+    if (!ok) {
+      setMissionMoveError("Could not move this operation.");
+      return;
+    }
+    setPendingMissionId(null);
+    setMissionMoveConfirm("");
+  }
   const operationWorktree = worktreeValue(d.operation.metadata);
   const missionWorktree = worktreeValue(operationMission?.metadata);
   const fleetWorktree = worktreeValue(app.fleets.find((f) => f.id === app.fleet)?.metadata) ?? true;
@@ -512,7 +561,7 @@ export function OperationDetail() {
     if (!before || loadingOlderComments) return;
     setLoadingOlderComments(true);
     const page = await getJSON<{ comments: Comment[]; comments_more: boolean }>(
-      `/api/v1/operations/${operationId}/comments?before=${before}&limit=${COMMENT_PREVIEW_LIMIT}`,
+      `/api/v1/comments?operation_id=${operationId}&before=${before}&limit=${COMMENT_PREVIEW_LIMIT}`,
     );
     setLoadingOlderComments(false);
     if (!page) return;
@@ -641,7 +690,7 @@ export function OperationDetail() {
             <span className="flex h-4 min-w-0 items-center truncate text-sm font-medium">{d.operation.title}</span>
           </div>
           <div className="flex items-center gap-2">
-            {(d.operation.status === "done" || d.operation.status === "cancelled") && (
+            {(d.operation.status === "done" || d.operation.status === "canceled") && (
               <Button size="sm" variant="ghost" onClick={() => app.setArchived(d.operation.id, !d.operation.archived)} title={d.operation.archived ? "Unarchive" : "Archive"}>
                 {d.operation.archived ? <ArchiveRestore /> : <Archive />} {d.operation.archived ? "Unarchive" : "Archive"}
               </Button>
@@ -761,14 +810,14 @@ export function OperationDetail() {
                   {commsOrder === "oldest_top" && loadOlderButton}
                   {activityRows.map((row) => "commentGroup" in row ? (
                     <div
-                      key={`${row.state}-${row.commentGroup.map((r) => r.comment.id).join("-")}`}
+                      key={`${row.status}-${row.commentGroup.map((r) => r.comment.id).join("-")}`}
                       className={cn(
                         "rounded-lg border p-3",
-                        row.state === "working" ? "ufo-active-composer border-warning/40 bg-brand/5" : "border-warning/25 bg-warning/5",
+                        row.status === "working" ? "ufo-active-composer border-warning/40 bg-brand/5" : "border-warning/25 bg-warning/5",
                       )}
                     >
                       <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium">
-                        {row.state === "working" ? (
+                        {row.status === "working" ? (
                           <span className="text-brand">{row.commentGroup.length} Comments</span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-warning">
@@ -786,10 +835,10 @@ export function OperationDetail() {
                             pilotStatus={item.pilotStatus}
                             captainSplit={item.captainSplit}
                             run={runForPilotComment(item.comment, runs)}
-                            queued={row.state === "queued"}
-                            processing={row.state === "working"}
+                            queued={row.status === "queued"}
+                            processing={row.status === "working"}
                             processingFrame={false}
-                            showStateBadge={row.state === "working"}
+                            showStatusBadge={row.status === "working"}
                             onTelemetry={openTelemetry}
                             timeFormat={timeFormat}
                             assets={operationAssets}
@@ -843,8 +892,39 @@ export function OperationDetail() {
                     </RailSelect>
                   </PropRow>
                   <PropRow label="Mission">
-                    <span className="truncate font-mono text-xs" title={operationMission?.name}>{operationMission?.key ?? "—"}</span>
+                    {d.operation.main_operation_id ? (
+                      <span className="truncate font-mono text-xs" title={operationMission?.name}>{operationMission?.key ?? "—"}</span>
+                    ) : (
+                      <RailSelect
+                        value={d.operation.mission_id}
+                        onValueChange={(missionId) => {
+                          if (missionId === d.operation.mission_id) return;
+                          setPendingMissionId(missionId);
+                          setMissionMoveConfirm("");
+                          setMissionMoveError(null);
+                        }}
+                      >
+                        {app.missions.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            <span className="font-mono text-xs" title={m.name}>{m.key}</span>
+                          </SelectItem>
+                        ))}
+                      </RailSelect>
+                    )}
                   </PropRow>
+                  {missionMoveNotice && (
+                    <div
+                      className="mx-0 mt-1 rounded-md border border-warning/35 bg-warning/10 px-2 py-1.5 text-[11px] leading-snug text-warning"
+                      title={missionMoveNotice.at ? `Moved at ${missionMoveNotice.at}` : undefined}
+                    >
+                      Moved from{" "}
+                      <span className="font-mono font-medium">
+                        {missionMoveNotice.from_key}
+                      </span>
+                      {missionMoveNotice.from_name ? ` (${missionMoveNotice.from_name})` : ""}
+                      . Prior mission context no longer applies to new runs.
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-4">
@@ -906,7 +986,16 @@ export function OperationDetail() {
                 )}
 
                 <div className="space-y-1.5 p-4 text-xs text-muted-foreground">
-                  <div className="flex items-center justify-between"><span>Created by</span><span className="text-foreground">{memberLabel(d.operation.created_by, app.user, app.members, "—")}</span></div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Created by</span>
+                    {d.operation.created_by ? (
+                      <button type="button" className="truncate text-foreground hover:underline" onClick={() => app.openUser(d.operation.created_by!)}>
+                        {memberLabel(d.operation.created_by, app.user, app.members, "—")}
+                      </button>
+                    ) : (
+                      <span className="text-foreground">—</span>
+                    )}
+                  </div>
                   <div className="flex items-center justify-between"><span>Created</span><span>{timestamp(d.operation.created_at)}</span></div>
                   <div className="flex items-center justify-between"><span>Updated</span><span>{timestamp(d.operation.updated_at)}</span></div>
                   {d.operation.started_at && <div className="flex items-center justify-between"><span>Started</span><span>{timestamp(d.operation.started_at)}</span></div>}
@@ -930,6 +1019,85 @@ export function OperationDetail() {
         onOpenChange={(next) => { if (!next) { setAssetDeleteTarget(null); setAssetDeleteError(null); } }}
         onConfirm={deleteOperationAsset}
       />
+      <Dialog
+        open={pendingMissionId != null}
+        onOpenChange={(next) => {
+          if (missionMoving) return;
+          if (!next) {
+            setPendingMissionId(null);
+            setMissionMoveConfirm("");
+            setMissionMoveError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move operation to another mission?</DialogTitle>
+            <DialogDescription>
+              This changes the display code, clears the pilot session, and switches
+              stacked context to the target mission. Sub-operations move with it.
+              Fleet stays the same.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
+              {operationMission?.key ?? "—"}
+              {operationMission?.name ? ` (${operationMission.name})` : ""}
+              {" → "}
+              {pendingMission?.key ?? "—"}
+              {pendingMission?.name ? ` (${pendingMission.name})` : ""}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="mission-move-confirm" className="block text-xs leading-snug text-muted-foreground">
+                Type <span className="font-mono text-foreground">{currentOperationCode}</span> to confirm
+              </Label>
+              <Input
+                id="mission-move-confirm"
+                value={missionMoveConfirm}
+                onChange={(e) => setMissionMoveConfirm(e.target.value)}
+                placeholder={currentOperationCode}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-sm"
+                disabled={missionMoving}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  void confirmMissionMove();
+                }}
+              />
+            </div>
+            {missionMoveError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {missionMoveError}
+              </div>
+            )}
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={missionMoving}
+              onClick={() => {
+                setPendingMissionId(null);
+                setMissionMoveConfirm("");
+                setMissionMoveError(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!missionMoveConfirmOk || !pendingMissionId || missionMoving}
+              onClick={() => void confirmMissionMove()}
+            >
+              {missionMoving ? <Loader2 className="size-4 animate-spin" /> : null}
+              Move operation
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -1403,20 +1571,20 @@ function compactActivityComments(comments: Comment[]) {
 function groupActivityRows(rows: ActivityCommentRow[], processingIds: Set<string>, queuedIds: Set<string>) {
   const out: ActivityDisplayRow[] = [];
   for (let i = 0; i < rows.length;) {
-    const state = processingIds.has(rows[i].comment.id) ? "working" : queuedIds.has(rows[i].comment.id) ? "queued" : null;
-    if (!state) {
+    const status = processingIds.has(rows[i].comment.id) ? "working" : queuedIds.has(rows[i].comment.id) ? "queued" : null;
+    if (!status) {
       out.push(rows[i]);
       i += 1;
       continue;
     }
     const group: ActivityCommentRow[] = [];
     while (i < rows.length) {
-      const nextState = processingIds.has(rows[i].comment.id) ? "working" : queuedIds.has(rows[i].comment.id) ? "queued" : null;
-      if (nextState !== state) break;
+      const nextStatus = processingIds.has(rows[i].comment.id) ? "working" : queuedIds.has(rows[i].comment.id) ? "queued" : null;
+      if (nextStatus !== status) break;
       group.push(rows[i]);
       i += 1;
     }
-    out.push(group.length > 1 ? { commentGroup: group, state } : group[0]);
+    out.push(group.length > 1 ? { commentGroup: group, status } : group[0]);
   }
   return out;
 }
@@ -1435,7 +1603,7 @@ function latestOperationRun(runs: Run[]) {
 }
 
 function isSettledProblemRun(run: Run) {
-  return run.state === "failed" || run.state === "blocked" || run.state === "canceled";
+  return run.status === "failed" || run.status === "blocked" || run.status === "canceled";
 }
 
 function oneLinePreview(text: string, max = 120) {
@@ -1470,9 +1638,9 @@ function marqueeDuration(text: string) {
   return `${Math.min(80, Math.max(16, Math.ceil(text.length / 3)))}s`;
 }
 
-function runStateLabel(run: Run) {
-  if (run.state === "canceled") return "Canceled";
-  return run.state.slice(0, 1).toUpperCase() + run.state.slice(1);
+function runStatusLabel(run: Run) {
+  if (run.status === "canceled") return "Canceled";
+  return run.status.slice(0, 1).toUpperCase() + run.status.slice(1);
 }
 
 function SplitIcon() {
@@ -1541,7 +1709,7 @@ function EditActions({
   );
 }
 
-function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = false, processing = false, processingFrame = true, showStateBadge = true, onTelemetry, timeFormat, assets, onQuote }: { c: Comment; operationId: string; pilotStatus?: string; captainSplit?: string; run: Run | null; queued?: boolean; processing?: boolean; processingFrame?: boolean; showStateBadge?: boolean; onTelemetry: (run: Run) => void; timeFormat: TimeFormat; assets: Asset[]; onQuote: (c: Comment, selectedText: string) => void }) {
+function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = false, processing = false, processingFrame = true, showStatusBadge = true, onTelemetry, timeFormat, assets, onQuote }: { c: Comment; operationId: string; pilotStatus?: string; captainSplit?: string; run: Run | null; queued?: boolean; processing?: boolean; processingFrame?: boolean; showStatusBadge?: boolean; onTelemetry: (run: Run) => void; timeFormat: TimeFormat; assets: Asset[]; onQuote: (c: Comment, selectedText: string) => void }) {
   const app = useApp();
   const rowRef = useRef<HTMLDivElement>(null);
   const quoteMenuRef = useRef<HTMLDivElement>(null);
@@ -1663,11 +1831,21 @@ function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = f
       <div className="flex-1">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            <span className={cn("truncate text-sm font-medium", isPilot && "text-brand", isSystem && "text-muted-foreground")}>
-              {commentAuthor(c, app.user, app.members, app.pilots)}
-            </span>
+            {c.author_type === "user" && c.author_id ? (
+              <button
+                type="button"
+                className={cn("min-w-0 truncate text-sm font-medium hover:underline", isPilot && "text-brand", isSystem && "text-muted-foreground")}
+                onClick={() => app.openUser(c.author_id!)}
+              >
+                {commentAuthor(c, app.user, app.members, app.pilots)}
+              </button>
+            ) : (
+              <span className={cn("min-w-0 truncate text-sm font-medium", isPilot && "text-brand", isSystem && "text-muted-foreground")}>
+                {commentAuthor(c, app.user, app.members, app.pilots)}
+              </span>
+            )}
             <span className="shrink-0 text-[11px] text-muted-foreground">{formatTimestamp(c.created_at, timeFormat)}</span>
-            {queued && showStateBadge && <CommentStateBadge />}
+            {queued && showStatusBadge && <CommentStatusBadge />}
             {pilotStatus && (
               <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                 <StatusIcon status={pilotStatus} className="size-3" /> {STATUS_LABEL[pilotStatus]}
@@ -1747,7 +1925,7 @@ function CommentRow({ c, operationId, pilotStatus, captainSplit, run, queued = f
   );
 }
 
-function CommentStateBadge() {
+function CommentStatusBadge() {
   return (
     <span
       title="Queued for the pilot's next turn"
@@ -2016,9 +2194,9 @@ const SOURCE_ACTION_TITLE: Record<SourceAction["kind"], string> = {
   create_source_branch: "Commit this operation worktree's changes to a local branch in the source repo.",
   refresh_from_source: "Update this operation worktree from the source checkout, preserving its current diff.",
 };
-const SOURCE_ACTION_STATE: Record<SourceAction["state"], string> = {
+const SOURCE_ACTION_STATUS: Record<SourceAction["status"], string> = {
   queued: "Queued",
-  claimed: "Running",
+  accepted: "Running",
   succeeded: "Done",
   failed: "Failed",
   conflicted: "Conflict",
@@ -2028,7 +2206,7 @@ const SOURCE_ACTION_VISIBLE_LIMIT = 3;
 function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions, timeFormat }: { operationId: string; worktreeEnabled: boolean; actionAvailable: boolean; actions: SourceAction[]; timeFormat: TimeFormat }) {
   const app = useApp();
   const [busy, setBusy] = useState<SourceAction["kind"] | null>(null);
-  const active = actions.some((a) => a.state === "queued" || a.state === "claimed");
+  const active = actions.some((a) => a.status === "queued" || a.status === "accepted");
   const visible = actions.slice(0, SOURCE_ACTION_VISIBLE_LIMIT);
   const hidden = actions.length - visible.length;
   const canCreate = worktreeEnabled && actionAvailable && !active && busy == null;
@@ -2067,7 +2245,7 @@ function SourceActions({ operationId, worktreeEnabled, actionAvailable, actions,
               <div className="flex min-w-0 items-center gap-1.5">
                 {action.kind === "create_source_branch" ? <GitBranch className="size-3 shrink-0 text-muted-foreground" /> : action.kind === "refresh_from_source" ? <RefreshCw className="size-3 shrink-0 text-muted-foreground" /> : <ArrowUp className="size-3 shrink-0 text-muted-foreground" />}
                 <span className="min-w-0 flex-1 truncate font-medium">{SOURCE_ACTION_LABEL[action.kind]}</span>
-                <span className={cn("shrink-0 text-[11px]", action.state === "succeeded" ? "text-success" : action.state === "failed" || action.state === "conflicted" ? "text-destructive" : "text-warning")}>{SOURCE_ACTION_STATE[action.state]}</span>
+                <span className={cn("shrink-0 text-[11px]", action.status === "succeeded" ? "text-success" : action.status === "failed" || action.status === "conflicted" ? "text-destructive" : "text-warning")}>{SOURCE_ACTION_STATUS[action.status]}</span>
               </div>
               {action.branch_name && <div className="truncate font-mono text-[11px] text-muted-foreground">{action.branch_name}{action.commit_sha ? ` @ ${action.commit_sha.slice(0, 8)}` : ""}</div>}
               {action.message && <div className="line-clamp-2 text-[11px] text-muted-foreground">{action.message}</div>}
@@ -2169,7 +2347,7 @@ function ActiveRunBanner({ run, operationId, inputPreview, onTelemetry }: { run:
 }
 
 function SettledRunBanner({ run, onTelemetry }: { run: Run; onTelemetry: (run: Run) => void }) {
-  const tone = run.state === "canceled"
+  const tone = run.status === "canceled"
     ? "border-muted bg-muted/30 text-muted-foreground"
     : "border-destructive/25 bg-destructive/5 text-destructive";
   return (
@@ -2181,7 +2359,7 @@ function SettledRunBanner({ run, onTelemetry }: { run: Run; onTelemetry: (run: R
       </Avatar>
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate text-sm font-medium">{pilotLabel(run.pilot ?? "pilot")}</span>
-        <span className="rounded-full bg-background/70 px-2 py-0.5 text-xs font-medium">{runStateLabel(run)}</span>
+        <span className="rounded-full bg-background/70 px-2 py-0.5 text-xs font-medium">{runStatusLabel(run)}</span>
         <span className="text-[11px] tabular-nums opacity-80">{elapsed(run.created_at, new Date(run.updated_at).getTime())}</span>
       </div>
       <Button variant="ghost" size="icon-sm" className="size-7 text-current opacity-75 hover:opacity-100" title="Open run log" aria-label="Open run log" onMouseDown={(e) => e.preventDefault()} onClick={() => onTelemetry(run)}>
@@ -2325,7 +2503,7 @@ function ActiveRunElapsed({ run, showIcon = true }: { run: Run; showIcon?: boole
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-  const queued = run.state === "queued";
+  const queued = run.status === "queued";
   const Icon = queued ? Clock : Loader2;
   return (
     <span className={cn(
@@ -2340,7 +2518,7 @@ function ActiveRunElapsed({ run, showIcon = true }: { run: Run; showIcon?: boole
 }
 
 function ActiveRunPill({ run }: { run: Run }) {
-  const queued = run.state === "queued";
+  const queued = run.status === "queued";
   return (
     <span
       title={queued ? "Queued" : "Working"}

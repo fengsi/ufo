@@ -8,7 +8,7 @@
 [![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust&style=for-the-badge)](https://github.com/fengsi/ufo/blob/main/apps/rover/Cargo.toml)
 
 `ufo-cli` is the host-side rover for UFO. It enrolls a local machine into a
-UFO fleet, long-poll claims queued operations, lets the assigned pilot drive
+UFO fleet, accepts queued operations, lets the assigned pilot drive
 the rover in an isolated per-operation work directory, streams telemetry back
 to the Hub, and keeps resulting diffs attached to the operation.
 
@@ -29,7 +29,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.3.1 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.5.0 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -87,9 +87,9 @@ enroll`.
 
 `ufo rover enroll` and `ufo rover start` open the live rover TUI when stdout
 is an interactive terminal. They still run the rover daemon loop: each
-enrollment long-polls for work. Use `ufo rover enroll --headless` on first
-run, or `ufo rover start --headless` later, for CI, launchd/systemd, or old
-log-oriented output.
+enrollment stays ready for operation. Use `ufo rover enroll --headless` on
+first run, or `ufo rover start --headless` later, for CI, launchd/systemd, or
+old log-oriented output.
 
 Use `ufo rover enroll --auto-upgrade`, `ufo rover start --auto-upgrade`, or
 `UFO_ROVER_AUTO_UPGRADE=1` to install and restart automatically when the Hub
@@ -108,7 +108,7 @@ ufo rover remove --all
 ## Pilots and tags
 
 The rover auto-detects local AI CLIs and reports capability tags for dispatch.
-UFO only lets a rover claim work when its tags match the queued operation.
+UFO only lets a rover accept work when its tags match the queued operation.
 
 | UFO pilot name | CLI on PATH | Capability tag |
 | --- | --- | --- |
@@ -128,15 +128,37 @@ UFO only lets a rover claim work when its tags match the queued operation.
 
 Rovers also report host tags such as `os:macos` and `arch:aarch64`.
 
-You can add user dispatch tags during enrollment:
+You can add user dispatch tags during enrollment (comma-separated; `:` is
+allowed inside a tag):
 
 ```bash
-ufo rover enroll --tag gpu --tag region:moon
+ufo rover enroll --tags gpu,region:moon
 ```
 
+To enroll several code-based rovers in one command, repeat `--config` with the
+same params as single enroll as pipe-separated `key=value` fields (`\|` for a
+literal `|`):
+
+```bash
+ufo rover enroll \
+  --config 'hub=https://hub-a.example|code=AAA|name=orion|units=2|tags=gpu,region:moon' \
+  --config 'hub=https://hub-b.example|code=BBB|name=andromeda'
+```
+
+Resolution for enroll (single flags or each `--config` field): explicit value
+→ matching env → default. Env fallbacks shared by single and multi:
+
+| Field | Env | Default |
+| --- | --- | --- |
+| hub | `UFO_HUB_URL` | `http://localhost:8080` |
+| code | `UFO_ROVER_ENROLLMENT_CODE` | browser approve if unset (single); multi needs `code=` or env |
+| units | `UFO_ROVER_UNITS` | `1` |
+| name, tags | _(none)_ | hostname / empty |
+
 Set per-rover concurrency (1-100) in the web Rovers panel or during enrollment
-with `ufo rover enroll --units N`. `ufo rover start --units N` and
-`UFO_ROVER_UNITS=N` are only startup fallbacks until hub config is available.
+with `ufo rover enroll --units N` or `UFO_ROVER_UNITS=N`. `ufo rover start
+--units N` and `UFO_ROVER_UNITS` on start are only startup overrides until hub
+config is available.
 
 ## Trust boundary
 

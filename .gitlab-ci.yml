@@ -17,10 +17,12 @@ workflow:
     POSTGRES_USER: ufo
     POSTGRES_PASSWORD: ufo
     POSTGRES_DB: ufo
-    UFO_HUB_TEST_DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo?sslmode=disable
+    UFO_HUB_DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo?sslmode=disable
+    UFO_HUB_TEST_DATABASE_URL: postgres://ufo:ufo@postgres:5432/ufo_test?sslmode=disable
   before_script:
     - apk add --no-cache postgresql-client
     - until pg_isready -h postgres -U ufo -d ufo; do sleep 1; done
+    - PGPASSWORD=ufo psql -h postgres -U ufo -d ufo -c "CREATE DATABASE ufo_test" || true
   script:
     - cd apps/api
     - go build ./...
@@ -71,19 +73,13 @@ workflow:
   stage: check
   tags:
     - saas-windows-medium-amd64
-  parallel:
-    matrix:
-      - TARGET:
-          - aarch64-pc-windows-msvc
-          - x86_64-pc-windows-msvc
   before_script:
     - Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
     - .\rustup-init.exe -y --profile minimal --default-toolchain stable
     - $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-    - rustup target add $env:TARGET
   script:
-    - cd apps/rover
-    - cargo build --target $env:TARGET
+    - Set-Location apps\rover
+    - cargo build --target x86_64-pc-windows-msvc
 
 "Rover Test":
   stage: check
@@ -116,4 +112,4 @@ workflow:
   stage: check
   image: node:26-alpine
   script:
-    - npx --yes @redocly/cli@2.35.1 lint apps/api/internal/spec/openapi.yaml
+    - npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml

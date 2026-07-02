@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import type { Operation } from "@/lib/types";
 
-export const ALL_STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"];
+export const ALL_STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "canceled"];
 export const DRAFT_SAVE_DELAY_SECONDS = 10;
 const DEFAULT_VISIBLE = ["backlog", "todo", "in_progress", "in_review", "done"];
 const KEY = "ufo.visibleStatuses";
 
 // Persisted, customizable board view: which status columns are shown. blocked +
-// cancelled are hidden by default and live behind the "Columns" menu.
+// canceled are hidden by default and live behind the "Columns" menu.
 export function useVisibleStatuses() {
   const [visible, setVisible] = useState<string[]>(DEFAULT_VISIBLE);
 

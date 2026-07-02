@@ -13,7 +13,7 @@ import { TYPE_META, elapsed, toolSummary } from "@/lib/timeline";
 import { useTelemetryShowAll, useTimeFormat, type TimeFormat } from "@/lib/view";
 import type { Artifact, Run, RunEvent, RunMessage } from "@/lib/types";
 
-const ACTIVE = new Set(["queued", "claimed", "starting", "running"]);
+const ACTIVE = new Set(["queued", "accepted", "starting", "running"]);
 
 function logTime(value: string, timeFormat: TimeFormat) {
   return new Date(value).toLocaleTimeString(undefined, {
@@ -31,7 +31,7 @@ export function TelemetryDialog({ run, open, onOpenChange }: { run: Run | null; 
   const msgs = detail?.messages ?? [];
   const visibleMsgs = telemetryShowAll ? msgs : msgs.filter((m) => m.type === "text");
   const events = detail?.events ?? [];
-  const active = liveRun ? ACTIVE.has(liveRun.state) : false;
+  const active = liveRun ? ACTIVE.has(liveRun.status) : false;
   const bottomRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 

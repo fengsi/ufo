@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.3.1
+  version: 0.5.0
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -22,11 +22,24 @@ tags:
   - name: auth
     description: Accounts and access tokens (public)
   - name: ui
-    description: Tenant/UI surface — httpOnly access JWT cookie or user bearer token; list endpoints accept optional fleet_id query filters, create endpoints take fleet_id in the JSON body, and fleet members remain nested under /v1/fleets/{fleet_id}/members
+    description: >
+      Tenant/UI surface — httpOnly access JWT cookie or user bearer token.
+      Collections use flat list/create (`GET|POST /v1/{resources}`); identity
+      is `GET|PATCH|DELETE /v1/{resources}/{id}`. List filters and optional
+      `fleet_id` are query params; create/update bodies carry `fleet_id` or
+      parent foreign keys when needed. Fleet membership stays nested under
+      `/v1/fleets/{id}/members`. Nested write exceptions (append-only or
+      parent-coupled joins): reactions under operations/comments; operation
+      labels; fleet members; crew members; rover run subpaths
+      (`events`|`artifacts`|`messages`|`heartbeat`|`result`). Asset `/{id}/file`
+      is a blob sub-resource, not a separate collection.
   - name: assets
     description: Asset metadata, upload, and file URLs
   - name: rover
-    description: Rover surface — per-rover connection token
+    description: >
+      Rover surface — per-rover connection token. Prefer collection creates
+      and PATCH for status. Nested under a run for telemetry appends
+      (`events`, `artifacts`, `messages`), lease `heartbeat`, and `result`.
 
 paths:
   /:
@@ -44,6 +57,8 @@ paths:
                 properties:
                   service: { type: string }
                   api_catalog: { type: string, description: URL of the /.well-known/api-catalog }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /.well-known/api-catalog:
     get:
       tags: [ui]
@@ -55,6 +70,8 @@ paths:
           content:
             application/linkset+json:
               schema: { type: object }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /openapi.yaml:
     get:
       tags: [ui]
@@ -66,6 +83,8 @@ paths:
           content:
             application/yaml:
               schema: { type: string }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /healthz:
     get:
       tags: [ui]
@@ -84,6 +103,7 @@ paths:
                   version: { type: string }
                   rover_min_version: { type: string, description: Minimum UFO rover CLI version accepted by this Hub. }
                   rover_max_version: { type: string, description: "Maximum UFO rover CLI version accepted by this Hub, or empty when unbounded." }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/auth/signup:
     post:
@@ -100,7 +120,7 @@ paths:
           description: Created (sets ufo_access httpOnly JWT cookie)
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema: { $ref: "#/components/schemas/AuthResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/Conflict" }
 
@@ -119,7 +139,7 @@ paths:
           description: OK (sets ufo_access httpOnly JWT cookie)
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema: { $ref: "#/components/schemas/AuthResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/auth/logout:
@@ -129,24 +149,26 @@ paths:
       summary: End the current session
       responses:
         "204": { description: Logged out }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /v1/me:
+  /v1/users/me:
     get:
       tags: [ui]
       operationId: me
-      summary: The current user
+      summary: Signed-in user private profile
+      description: Full account fields for the current principal (email, timestamps, …).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       responses:
         "200":
           description: OK
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema: { $ref: "#/components/schemas/Me" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     patch:
       tags: [ui]
       operationId: updateMe
-      summary: Update the current user
+      summary: Update the signed-in user (self only)
       security: [{ accessCookie: [] }, { userBearer: [] }]
       requestBody:
         required: true
@@ -160,8 +182,25 @@ paths:
           description: Updated
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema: { $ref: "#/components/schemas/Me" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/users/{id}:
+    get:
+      tags: [ui]
+      operationId: getUser
+      summary: Public user profile
+      description: Peer-visible fields plus mutual fleets (caller ∩ subject). 404 if not allowed.
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/fleets:
     get:
@@ -200,6 +239,15 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
 
   /v1/fleets/{id}:
+    get:
+      tags: [ui]
+      operationId: getFleet
+      summary: Get a fleet the caller belongs to
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Fleet" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [ui]
       operationId: updateFleet
@@ -370,6 +418,7 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/EnrollmentCode" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     post:
       tags: [ui]
       operationId: createEnrollmentCode
@@ -450,19 +499,22 @@ paths:
     get:
       tags: [ui]
       operationId: listOperations
-      summary: One board column, keyset-paginated
+      summary: List operations (board column, filters, or text query)
       description: >
-        With `status`, returns that column newest-first, keyset-paginated by
-        `before` (id; 0/omitted = newest) and `limit` (default 50, max 200),
-        optionally scoped to a `mission` (0/omitted = all). Without `status`,
-        returns a bounded newest page across statuses.
+        Shared list endpoint for the board and typeahead. With `q`, matches
+        title substring, numeric sequence, or `KEY-123` code (default limit
+        20). With `status`, returns that column newest-first, keyset-paginated
+        by `before` (operation public id) and `limit` (default 50, max 200),
+        optionally scoped to a `mission` and other board filters. Without
+        `status` or `q`, returns a bounded newest page across statuses.
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/FleetIdQuery" }
+        - { name: q, in: query, schema: { type: string }, description: "title substring, sequence, or KEY-123 code" }
         - { name: status, in: query, schema: { type: string } }
         - { name: mission, in: query, schema: { type: string, format: uuid } }
         - { name: before, in: query, schema: { type: string, format: uuid } }
-        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 200 }, description: "default 50 (20 when q is set)" }
         - { name: priority, in: query, schema: { type: integer }, description: 0–4 }
         - { name: assignee_kind, in: query, schema: { type: string, enum: [user, pilot, crew] } }
         - { name: assignee, in: query, schema: { type: string, format: uuid }, description: specific user or crew }
@@ -476,155 +528,31 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Operation" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /v1/operations/counts:
+  /v1/operations/stats:
     get:
       tags: [ui]
-      operationId: countOperations
-      summary: Per-status operation counts (optionally scoped to a mission + filters)
+      operationId: operationsStats
+      summary: Operation stats for the board
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/FleetIdQuery" }
+        - name: metrics
+          in: query
+          schema: { type: string, default: "by_status,working" }
+          description: Comma-separated metrics (by_status, working)
         - { name: mission, in: query, schema: { type: string, format: uuid } }
         - { name: priority, in: query, schema: { type: integer } }
         - { name: assignee_kind, in: query, schema: { type: string, enum: [user, pilot, crew] } }
         - { name: assignee, in: query, schema: { type: string, format: uuid } }
-        - { name: pilot, in: query, schema: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" } }
+        - { name: pilot, in: query, schema: { type: string } }
         - { name: creator, in: query, schema: { type: string, format: uuid } }
         - { name: label, in: query, schema: { type: string, format: uuid } }
         - { name: archived, in: query, schema: { type: string, enum: ["1"] } }
       responses:
-        "200":
-          description: status → count
-          content:
-            application/json:
-              schema: { type: object, additionalProperties: { type: integer, format: int64 } }
-
-  /v1/operations/working:
-    get:
-      tags: [ui]
-      operationId: workingCount
-      summary: Count operations with queued vs claimed/running runs
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/FleetIdQuery" }]
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  count: { type: integer, format: int64, description: queued + working }
-                  queued: { type: integer, format: int64 }
-                  working: { type: integer, format: int64, description: claimed + starting + running }
-
-  /v1/operations/{id}:
-    get:
-      tags: [ui]
-      operationId: getOperation
-      summary: An operation with its comment thread and runs
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/OperationDetail" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    patch:
-      tags: [ui]
-      operationId: patchOperation
-      summary: Update operation fields
-      description: >
-        Partial resource update. Assignee changes re-apply auto-dispatch policy:
-        a pilot (or crew with a pilot) queues a run, while human-only work
-        stays in backlog unless status is explicitly patched.
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/OperationPatch" }
-      responses:
-        "200":
-          description: Updated operation
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Operation" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "200": { description: OK }
         "400": { $ref: "#/components/responses/BadRequest" }
-
-  /v1/operations/{id}/labels/{label_id}:
-    put:
-      tags: [ui]
-      operationId: attachLabel
-      summary: Attach a label to an operation
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { $ref: "#/components/parameters/Id" }
-        - { name: label_id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        "204": { description: Attached }
-    delete:
-      tags: [ui]
-      operationId: detachLabel
-      summary: Detach a label from an operation
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { $ref: "#/components/parameters/Id" }
-        - { name: label_id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        "204": { description: Detached }
-
-  /v1/relations:
-    post:
-      tags: [ui]
-      operationId: addRelation
-      summary: Link one operation to another (blocks / blocked_by / relates / duplicate / duplicated_by)
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [operation_id, kind, target]
-              properties:
-                operation_id: { type: string, format: uuid, description: source operation public id }
-                kind: { type: string, enum: [blocks, blocked_by, relates, duplicate, duplicated_by] }
-                target: { type: string, format: uuid, description: other operation public id }
-      responses:
-        "204": { description: Linked }
-
-  /v1/relations/{id}:
-    delete:
-      tags: [ui]
-      operationId: deleteRelation
-      summary: Remove an operation relationship
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/Id" }]
-      responses:
-        "204": { description: Removed }
-
-  /v1/operations/search:
-    get:
-      tags: [ui]
-      operationId: searchOperations
-      summary: Typeahead search for operations (link picker)
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { $ref: "#/components/parameters/FleetIdQuery" }
-        - { name: q, in: query, schema: { type: string }, description: title substring or numeric sequence }
-      responses:
-        "200":
-          description: OK
-          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/OperationReference" } } } }
 
   /v1/source-actions:
     post:
@@ -663,6 +591,7 @@ paths:
         "201":
           description: Linked
           content: { application/json: { schema: { $ref: "#/components/schemas/PullRequest" } } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/pull-requests/{id}:
     delete:
@@ -673,8 +602,33 @@ paths:
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
         "204": { description: Unlinked }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/assets:
+    get:
+      tags: [assets]
+      operationId: listAssets
+      summary: List ready assets in a fleet
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+        - name: operation_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: Optional; conversation view (refs + metadata.operation_id)
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Asset" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [assets]
       operationId: createAsset
@@ -700,6 +654,7 @@ paths:
       parameters: [{ $ref: "#/components/parameters/FleetIdQuery" }]
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Routine" } } } } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     post:
       tags: [ui]
       operationId: createRoutine
@@ -713,6 +668,15 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
 
   /v1/routines/{id}:
+    get:
+      tags: [ui]
+      operationId: getRoutine
+      summary: Get a routine by public id
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Routine" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [ui]
       operationId: updateRoutine
@@ -736,15 +700,52 @@ paths:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /v1/routines/{id}/pulse:
+  /v1/pulses:
     post:
       tags: [ui]
-      operationId: pulseRoutine
-      summary: Pulse a routine to create an operation
+      operationId: createPulse
+      summary: Pulse a routine
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [routine_id]
+              properties:
+                routine_id: { type: string, format: uuid }
+      responses:
+        "201": { description: Created pulse, content: { application/json: { schema: { $ref: "#/components/schemas/Pulse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    get:
+      tags: [ui]
+      operationId: listPulses
+      summary: List pulses in a fleet
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+        - name: routine_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Pulse" } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/pulses/{id}:
+    get:
+      tags: [ui]
+      operationId: getPulse
+      summary: Get a pulse by public id
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
-        "201": { description: Created operation, content: { application/json: { schema: { $ref: "#/components/schemas/Operation" } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Pulse" } } } }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/labels:
@@ -756,6 +757,7 @@ paths:
       parameters: [{ $ref: "#/components/parameters/FleetIdQuery" }]
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Label" } } } } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     post:
       tags: [ui]
       operationId: createLabel
@@ -769,6 +771,15 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
 
   /v1/labels/{id}:
+    get:
+      tags: [ui]
+      operationId: getLabel
+      summary: Get a label by public id
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Label" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [ui]
       operationId: updateLabel
@@ -789,30 +800,126 @@ paths:
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
         "204": { description: Deleted }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /v1/operations/{id}:
+    get:
+      tags: [ui]
+      operationId: getOperation
+      summary: Operation detail (comments, runs, relations, source actions)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperationDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [ui]
+      operationId: patchOperation
+      summary: Update an operation (title, body, status, assignee, tags, …)
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperationPatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/operations/{id}/labels/{label_id}:
+    put:
+      tags: [ui]
+      operationId: attachLabel
+      summary: Attach a fleet label to an operation
+      description: Nested exception — operation↔label join is parent-coupled (no standalone assignment resource).
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: label_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Attached }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [ui]
+      operationId: detachLabel
+      summary: Detach a fleet label from an operation
+      description: Nested exception — operation↔label join is parent-coupled (no standalone assignment resource).
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: label_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Detached }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/operations/{id}/reactions/{emoji}:
     put:
       tags: [ui]
       operationId: addOperationReaction
       summary: Add the caller's emoji reaction to an operation
+      description: Nested exception — reactions are parent-coupled (generic target FK).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { name: emoji, in: path, required: true, schema: { type: string } }
       responses:
         "204": { description: Added }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     delete:
       tags: [ui]
       operationId: removeOperationReaction
       summary: Remove the caller's emoji reaction from an operation
+      description: Nested exception — reactions are parent-coupled (generic target FK).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { name: emoji, in: path, required: true, schema: { type: string } }
       responses:
         "204": { description: Removed }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/comments:
+    get:
+      tags: [ui]
+      operationId: listComments
+      summary: List comments for an operation
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - name: operation_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: before
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: Return comments before this comment id
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100 }
+          description: Page size; enables paged response
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { type: array, items: { $ref: "#/components/schemas/Comment" } }
+                  - { $ref: "#/components/schemas/CommentsPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [ui]
       operationId: postComment
@@ -868,6 +975,7 @@ paths:
       tags: [ui]
       operationId: addReaction
       summary: Add the caller's emoji reaction to a comment
+      description: Nested exception — reactions are parent-coupled (generic target FK).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -887,26 +995,6 @@ paths:
         "204": { description: Removed }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /v1/operations/{id}/comments:
-    get:
-      tags: [ui]
-      operationId: listComments
-      summary: List an operation's comment thread
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-        - { name: before, in: query, required: false, schema: { type: string, format: uuid }, description: Return comments before this comment id }
-        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 }, description: Page size; enables paged response }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - { type: array, items: { $ref: "#/components/schemas/Comment" } }
-                  - { $ref: "#/components/schemas/CommentsPage" }
-        "404": { $ref: "#/components/responses/NotFound" }
   /v1/pilots:
     get:
       tags: [ui]
@@ -924,6 +1012,7 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Pilot" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/crews:
     get:
@@ -938,6 +1027,7 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Crew" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     post:
       tags: [ui]
       operationId: createCrew
@@ -958,6 +1048,15 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   /v1/crews/{id}:
+    get:
+      tags: [ui]
+      operationId: getCrew
+      summary: Get a crew with members
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Crew" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [ui]
       operationId: patchCrew
@@ -995,6 +1094,7 @@ paths:
       tags: [ui]
       operationId: addCrewMember
       summary: Add (or update the role of) a crew member (owner/admin only)
+      description: Nested exception — crew membership is a parent-coupled join (compound key).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1014,6 +1114,7 @@ paths:
       tags: [ui]
       operationId: removeCrewMember
       summary: Remove a crew member (owner/admin only)
+      description: Nested exception — crew membership is a parent-coupled join (compound key).
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1087,28 +1188,12 @@ paths:
                 items: { $ref: "#/components/schemas/Asset" }
         "426": { $ref: "#/components/responses/UpgradeRequired" }
 
-  /v1/operations/{id}/assets:
-    get:
-      tags: [assets]
-      operationId: listOperationAssets
-      summary: List assets referenced by an operation conversation
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { $ref: "#/components/parameters/Id" }
-      responses:
-        "200":
-          description: Referenced assets in first-reference order
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/Asset" }
-
   /v1/assets/{id}/file:
     get:
       tags: [assets]
       operationId: getAssetFile
       summary: Get an asset file after UFO authorization
+      description: Blob sub-resource of the asset (bytes/redirect), not a standalone collection.
       security: [{ accessCookie: [] }, { userBearer: [] }, { roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1128,6 +1213,7 @@ paths:
       tags: [assets]
       operationId: putAssetFile
       summary: Upload an asset file through the local-dev backend
+      description: Blob sub-resource of the asset (bytes), not a standalone collection.
       security: [{ accessCookie: [] }, { userBearer: [] }, { roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1143,15 +1229,21 @@ paths:
     get:
       tags: [ui]
       operationId: listRuns
-      summary: List runs in the fleet
+      summary: List runs in a fleet
       security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/FleetIdQuery" }]
+      parameters:
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+        - name: operation_id
+          in: query
+          schema: { type: string, format: uuid }
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Run" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/runs/{id}:
     get:
@@ -1169,10 +1261,11 @@ paths:
               schema: { $ref: "#/components/schemas/RunDetail" }
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
-      tags: [rover]
-      operationId: setRunState
-      summary: Set a run's state (rover connection token)
-      security: [{ roverConnectionToken: [] }]
+      tags: [ui, rover]
+      operationId: patchRun
+      summary: Update a run's status
+      description: User-authenticated requests may only set `status=canceled`; rover connection tokens report lifecycle status.
+      security: [{ accessCookie: [] }, { userBearer: [] }, { roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { $ref: "#/components/parameters/RoverVersion" }
@@ -1180,31 +1273,18 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/SetStateRequest" }
+            schema: { $ref: "#/components/schemas/PatchRunRequest" }
       responses:
         "200":
           description: Updated run
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Run" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Run is not active }
         "426": { $ref: "#/components/responses/UpgradeRequired" }
-  /v1/runs/{id}/cancel:
-    post:
-      tags: [ui]
-      operationId: cancelRun
-      summary: Cancel an active run
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { $ref: "#/components/parameters/Id" }
-      responses:
-        "200":
-          description: Canceled
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Run" }
-        "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/artifacts/{id}/content:
     get:
@@ -1236,6 +1316,7 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Mission" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
     post:
       tags: [ui]
       operationId: createMission
@@ -1255,21 +1336,32 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/Conflict" }
 
-  /v1/missions/counts:
+  /v1/missions/stats:
     get:
       tags: [ui]
-      operationId: missionCounts
-      summary: Per-mission operation counts (keyed by mission id)
+      operationId: missionsStats
+      summary: Mission stats
       security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/FleetIdQuery" }]
+      parameters:
+        - { $ref: "#/components/parameters/FleetIdQuery" }
+        - name: metrics
+          in: query
+          schema: { type: string, default: by_mission }
       responses:
-        "200":
-          description: mission id → count
-          content:
-            application/json:
-              schema: { type: object, additionalProperties: { type: integer, format: int64 } }
+        "200": { description: OK }
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /v1/missions/{id}:
+    get:
+      tags: [ui]
+      operationId: getMission
+      summary: Get a mission by public id
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Mission" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [ui]
       operationId: updateMission
@@ -1305,6 +1397,7 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Signal" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/signals/{id}:
     patch:
@@ -1326,6 +1419,7 @@ paths:
       responses:
         "204":
           description: Updated
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/ws:
     get:
@@ -1344,29 +1438,32 @@ paths:
         "101": { description: Switching Protocols (WebSocket) }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /v1/fleets/{fleet_id}/members:
+  /v1/fleets/{id}/members:
     get:
       tags: [ui]
       operationId: listMembers
       summary: Human members of the fleet
+      description: Nested under fleet — membership is scoped to the tenant, not a global collection.
       security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/FleetId" }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/Member" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
-  /v1/fleets/{fleet_id}/members/{id}:
+  /v1/fleets/{id}/members/{member_id}:
     patch:
       tags: [ui]
       operationId: updateMemberRole
       summary: Change a member's role (owner only)
+      description: Nested exception — fleet membership is a parent-coupled join.
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-        - { $ref: "#/components/parameters/FleetId" }
+        - { $ref: "#/components/parameters/Id" }
+        - { name: member_id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
         required: true
         content:
@@ -1383,10 +1480,11 @@ paths:
       tags: [ui]
       operationId: removeMember
       summary: Remove a member from the fleet (owner/admin only; cannot remove an owner)
+      description: Nested exception — fleet membership is a parent-coupled join.
       security: [{ accessCookie: [] }, { userBearer: [] }]
       parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-        - { $ref: "#/components/parameters/FleetId" }
+        - { $ref: "#/components/parameters/Id" }
+        - { name: member_id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         "204": { description: Removed }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1446,8 +1544,29 @@ paths:
           content:
             application/json:
               schema: { type: array, items: { $ref: "#/components/schemas/MyInvite" } }
+        "4XX": { description: Client error, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /v1/invitations/{id}:
+    patch:
+      tags: [ui]
+      operationId: patchInvitation
+      summary: Accept or decline an invitation
+      security: [{ accessCookie: [] }, { userBearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [accepted, declined] }
+      responses:
+        "200": { description: Accepted (returns fleet_id) }
+        "204": { description: Declined }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     delete:
       tags: [ui]
       operationId: revokeInvitation
@@ -1459,69 +1578,38 @@ paths:
         "204": { description: Revoked }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /v1/invitations/{id}/accept:
-    post:
-      tags: [ui]
-      operationId: acceptInvitation
-      summary: Accept an invitation addressed to the signed-in user
-      description: Verifies the email matches, the invitation is pending and not expired, then joins the fleet.
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        "200":
-          description: Joined
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { fleet_id: { type: string, format: uuid } }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "410": { description: Invitation expired }
-
-  /v1/invitations/{id}/decline:
-    post:
-      tags: [ui]
-      operationId: declineInvitation
-      summary: Decline an invitation addressed to the signed-in user
-      security: [{ accessCookie: [] }, { userBearer: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        "204": { description: Declined }
-
-  /v1/runs/claim:
+  /v1/runs/accept:
     post:
       tags: [rover]
-      operationId: claimRun
-      summary: Long-poll claim the oldest queued run in the rover's fleet
+      operationId: acceptRun
+      summary: Long-poll accept the oldest queued run in the rover's fleet
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/RoverVersion" }
       responses:
         "200":
-          description: A run was claimed
+          description: A run was accepted
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ClaimedRun" }
+              schema: { $ref: "#/components/schemas/AcceptedRun" }
         "204": { description: No queued runs before the long-poll deadline }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "426": { $ref: "#/components/responses/UpgradeRequired" }
 
-  /v1/source-actions/claim:
+  /v1/source-actions/accept:
     post:
       tags: [rover]
-      operationId: claimSourceAction
-      summary: Claim a queued local source action pinned to this rover
+      operationId: acceptSourceAction
+      summary: Accept a queued local source action pinned to this rover
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/RoverVersion" }
       responses:
         "200":
-          description: A source action was claimed
+          description: A source action was accepted
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ClaimedSourceAction" }
+              schema: { $ref: "#/components/schemas/AcceptedSourceAction" }
         "204": { description: No queued source action for this rover }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "426": { $ref: "#/components/responses/UpgradeRequired" }
@@ -1530,7 +1618,7 @@ paths:
     patch:
       tags: [rover]
       operationId: completeSourceAction
-      summary: Report a claimed source action result
+      summary: Report an accepted source action result
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1550,6 +1638,7 @@ paths:
       tags: [rover]
       operationId: heartbeat
       summary: Renew a run's lease
+      description: Nested exception — lease renewal is tightly coupled to the active run (no standalone lease resource).
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1564,6 +1653,7 @@ paths:
       tags: [rover]
       operationId: appendRunEvent
       summary: Append an event to a run's timeline
+      description: Nested exception — append-only telemetry; not listed as a standalone collection.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1587,6 +1677,7 @@ paths:
       tags: [rover]
       operationId: appendArtifact
       summary: Attach an artifact (e.g. a git diff) to a run
+      description: Nested exception — append-only under the owning run.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1610,6 +1701,7 @@ paths:
       tags: [rover]
       operationId: appendRunMessage
       summary: Append a typed transcript message (pilot telemetry) to a run
+      description: Nested exception — append-only pilot telemetry under the owning run.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1630,14 +1722,11 @@ paths:
         "426": { $ref: "#/components/responses/UpgradeRequired" }
 
   /v1/runs/{id}/result:
-    put:
+    post:
       tags: [rover]
       operationId: runResult
-      summary: Record the pilot session + post its final message as a comment
-      description: >
-        Stores the resumable session id on the run and its operation (so a human
-        reply resumes it) and, if message is non-empty, posts it as a pilot
-        comment on the operation.
+      summary: Submit run result (terminal status, session, message, optional spawn payload)
+      description: Nested under the run. Sets status and finalized_at together; second call is 409.
       security: [{ roverConnectionToken: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1651,6 +1740,7 @@ paths:
         "204": { description: Recorded }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "426": { $ref: "#/components/responses/UpgradeRequired" }
 
 components:
@@ -1681,12 +1771,6 @@ components:
       required: true
       description: Public resource id.
       schema: { type: string, format: uuid }
-    FleetId:
-      name: fleet_id
-      in: path
-      required: true
-      description: Fleet public id (membership enforced).
-      schema: { type: string, format: uuid }
     FleetIdQuery:
       name: fleet_id
       in: query
@@ -1700,7 +1784,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.3.1"
+        example: "0.5.0"
 
   responses:
     BadRequest:
@@ -1740,14 +1824,30 @@ components:
       type: object
       properties: { error: { type: string } }
 
-    User:
+    Me:
       type: object
+      description: Private profile for the signed-in user (`GET|PATCH /v1/users/me`).
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
         name: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    UserProfile:
+      type: object
+      description: Public peer profile; fleets lists mutual fleets only (caller ∩ subject).
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        fleets: { type: array, items: { $ref: "#/components/schemas/Fleet" } }
+
+    AuthResponse:
+      type: object
+      required: [user, expires_at]
+      properties:
+        user: { $ref: "#/components/schemas/Me" }
+        expires_at: { type: string, format: date-time }
 
     Fleet:
       type: object
@@ -1768,7 +1868,7 @@ components:
         name: { type: string }
         status: { type: string, enum: [online, full, offline], description: full means all units are occupied }
         units: { type: integer, minimum: 1, maximum: 100, description: concurrent operations this rover can process }
-        running_units: { type: integer, minimum: 0, description: active operations currently claimed by this rover }
+        running_units: { type: integer, minimum: 0, description: active operations currently accepted by this rover }
         auto_tags: { type: array, items: { type: string }, description: "rover-detected (pilot:*, os:*, arch:*)" }
         tags: { type: array, items: { type: string }, description: user-set dispatch tags }
         metadata: { type: object, additionalProperties: true, readOnly: true }
@@ -1885,8 +1985,8 @@ components:
         id: { type: string, format: uuid }
         title: { type: string }
         body: { type: string }
-        status: { type: string, enum: [backlog, todo, in_progress, in_review, done, blocked, cancelled] }
-        active_run_state: { type: string, enum: ["", queued, claimed, starting, running], description: "Current in-flight run state, empty when none" }
+        status: { type: string, enum: [backlog, todo, in_progress, in_review, done, blocked, canceled] }
+        active_run_status: { type: string, enum: ["", queued, accepted, starting, running], description: "Current in-flight run status, empty when none" }
         mission_id: { type: string, format: uuid, description: The mission this operation belongs to (required) }
         sequence: { type: integer, description: Per-mission running number; displayed as <mission.key>-<sequence> }
         priority: { type: integer, description: 0 none → 4 urgent }
@@ -1909,7 +2009,7 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work starts }
-        finished_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work reaches done/cancelled }
+        finished_at: { type: string, format: date-time, nullable: true, description: Lifecycle timestamp set when work reaches done/canceled }
 
     Label:
       type: object
@@ -1935,6 +2035,18 @@ components:
         next_pulse_at: { type: string, format: date-time, nullable: true }
         last_pulsed_at: { type: string, format: date-time, nullable: true }
 
+    Pulse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        routine_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [pending, succeeded, skipped, failed] }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+
     RoutineMetadata:
       type: object
       additionalProperties: true
@@ -1943,8 +2055,8 @@ components:
           type: object
           additionalProperties: true
           properties:
-            type: { type: string, enum: [manual, schedule], default: manual }
-            cron: { type: string, description: "Required when trigger.type=schedule; supports @hourly/@daily/@weekly and simple five-field cron" }
+            kind: { type: string, enum: [manual, schedule], default: manual }
+            cron: { type: string, description: "Required when trigger.kind=schedule; supports @hourly/@daily/@weekly and simple five-field cron" }
         operation:
           type: object
           additionalProperties: true
@@ -1968,7 +2080,7 @@ components:
 
     OperationReference:
       type: object
-      description: Compact operation reference (relations, search) — enough to render a code and status.
+      description: Compact operation reference (relations, link pickers) — enough to render a code and status.
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -1994,7 +2106,7 @@ components:
         run_id: { type: string, format: uuid, nullable: true }
         rover_id: { type: string, format: uuid, nullable: true }
         kind: { type: string, enum: [apply_to_source, create_source_branch, refresh_from_source] }
-        state: { type: string, enum: [queued, claimed, succeeded, failed, conflicted] }
+        status: { type: string, enum: [queued, accepted, succeeded, failed, conflicted] }
         branch_name: { type: string }
         commit_sha: { type: string }
         base_sha: { type: string }
@@ -2004,7 +2116,7 @@ components:
         created_by: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-        claimed_at: { type: string, format: date-time, nullable: true }
+        accepted_at: { type: string, format: date-time, nullable: true }
         finished_at: { type: string, format: date-time, nullable: true }
 
     PullRequest:
@@ -2013,7 +2125,7 @@ components:
         id: { type: string, format: uuid }
         url: { type: string }
         title: { type: string }
-        state: { type: string }
+        status: { type: string }
         number: { type: integer, nullable: true }
         metadata: { type: object, additionalProperties: true }
         created_by: { type: string, format: uuid, nullable: true }
@@ -2148,9 +2260,9 @@ components:
         id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
         pilot: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" }
-        state:
+        status:
           type: string
-          enum: [queued, claimed, starting, running, blocked, succeeded, failed, canceled]
+          enum: [queued, accepted, starting, running, blocked, succeeded, failed, canceled]
         needs_input: { type: boolean, description: pilot ended this run awaiting a human answer }
         metadata: { type: object, additionalProperties: true, readOnly: true }
         created_at: { type: string, format: date-time }
@@ -2221,9 +2333,9 @@ components:
 
     PatchAssetRequest:
       type: object
-      required: [state]
+      required: [status]
       properties:
-        state: { type: string, enum: [ready] }
+        status: { type: string, enum: [ready] }
 
     AssetUploadIntent:
       type: object
@@ -2285,14 +2397,16 @@ components:
         input: { type: object, additionalProperties: true }
         output: { type: string }
 
-    ClaimedRun:
+    AcceptedRun:
       type: object
-      description: Rover-facing view of a claimed run.
+      description: Rover-facing view of an accepted run.
       properties:
         id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
         operation_created_at: { type: string, format: date-time }
-        state: { type: string }
+        operation_worktree_name: { type: string }
+        worktree_enabled: { type: boolean }
+        status: { type: string }
         pilot: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$" }
         command: { type: string, description: "Resume prompt carried to the pilot, if any" }
         prompt: { type: string, description: First run = operation conversation; resume run = the human reply }
@@ -2300,11 +2414,11 @@ components:
         can_propose_sub_operations: { type: boolean, description: captain may propose sub-operations (top-level crew operation only) }
         assets:
           type: array
-          items: { $ref: "#/components/schemas/ClaimedAsset" }
+          items: { $ref: "#/components/schemas/AcceptedAsset" }
 
-    ClaimedSourceAction:
+    AcceptedSourceAction:
       type: object
-      description: Rover-facing view of a claimed local source action.
+      description: Rover-facing view of an accepted local source action.
       properties:
         id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
@@ -2316,9 +2430,9 @@ components:
 
     CompleteSourceActionRequest:
       type: object
-      required: [state]
+      required: [status]
       properties:
-        state: { type: string, enum: [succeeded, failed, conflicted] }
+        status: { type: string, enum: [succeeded, failed, conflicted] }
         branch_name: { type: string }
         commit_sha: { type: string }
         base_sha: { type: string }
@@ -2326,9 +2440,9 @@ components:
         message: { type: string }
         metadata: { type: object, additionalProperties: true }
 
-    ClaimedAsset:
+    AcceptedAsset:
       type: object
-      description: Asset referenced from a claimed run prompt.
+      description: Asset referenced from an accepted run prompt.
       properties:
         id: { type: string, format: uuid }
         filename: { type: string }
@@ -2396,9 +2510,17 @@ components:
       properties:
         title: { type: string }
         body: { type: string }
+        mission_id:
+          type: string
+          format: uuid
+          description: >
+            Move the operation (and its sub-operations) to another mission in
+            the same fleet. Allocates a new per-mission sequence, clears the
+            pilot session so the next run uses the new mission/fleet context,
+            and posts a system communication. Rejected while a run is active.
         assignee_type: { type: string, enum: [pilot, user, crew], nullable: true }
         assignee_id: { type: string, nullable: true, description: "user/crew public id, or pilot kind when assignee_type=pilot" }
-        status: { type: string, enum: [backlog, todo, in_progress, in_review, done, blocked, cancelled] }
+        status: { type: string, enum: [backlog, todo, in_progress, in_review, done, blocked, canceled] }
         required_tags: { type: array, items: { type: string } }
         excluded_tags: { type: array, items: { type: string } }
         priority: { type: integer, minimum: 0, maximum: 4 }
@@ -2433,13 +2555,14 @@ components:
       properties:
         role: { type: string, enum: [captain, member], default: member }
 
-    SetStateRequest:
+    PatchRunRequest:
       type: object
-      required: [state]
+      required: [status]
       properties:
-        state:
+        status:
           type: string
           enum: [starting, running, blocked, succeeded, failed, canceled]
+          description: User-authenticated requests only accept canceled; rover tokens accept all listed statuses.
         metadata:
           type: object
           additionalProperties: true
@@ -2460,7 +2583,11 @@ components:
 
     RunResultRequest:
       type: object
+      required: [status]
       properties:
+        status:
+          type: string
+          enum: [succeeded, failed]
         session_id: { type: string, description: The pilot session id to persist for resume }
         message: { type: string, description: The pilot's final message; posted as a pilot comment if non-empty }
         needs_input: { type: boolean, description: pilot is awaiting a human answer to continue (→ input_requested signal) }

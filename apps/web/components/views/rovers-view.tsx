@@ -191,9 +191,9 @@ export function RoversView() {
     const next = pendingEnrollmentFromHash(app.fleet);
     if (next == null) return;
     const units = clampUnits(next.units);
-    let cancelled = false;
+    let canceled = false;
     app.savePendingRover(next.code, { name: next.name, units, tags: next.tags }).then((code) => {
-      if (cancelled || code == null) return;
+      if (canceled || code == null) return;
       clearPendingEnrollmentHash();
       setActivePendingID(code.id);
       setPendingFleet(next.fleet);
@@ -202,7 +202,7 @@ export function RoversView() {
       setPendingTags(metadataTags(code.metadata));
     });
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, [app.fleet, app.savePendingRover]);
 
@@ -336,20 +336,20 @@ export function RoversView() {
             </pre>
           )}
           <div className="text-sm text-muted-foreground">
-            Hub slots: <span className="font-medium text-foreground">{runningSlots}</span> / {totalSlots} active
+            Hub slots: <span className="font-medium text-foreground">{runningSlots}</span>/{totalSlots} active
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-border pr-1">
             {app.rovers.map((r) => {
-              const state = ROVER_STATUS[r.status] ?? { label: r.status, icon: Circle, color: "text-muted-foreground" };
-              const StateIcon = state.icon;
+              const status = ROVER_STATUS[r.status] ?? { label: r.status, icon: Circle, color: "text-muted-foreground" };
+              const StatusIcon = status.icon;
               return (
                 <div key={r.id} className="space-y-2 py-3 text-sm">
                   <div className="flex items-center justify-between">
                     <span className="flex items-center gap-2">
                       <RoverName id={r.id} name={r.name} onRename={app.renameRover} />
-                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={`Rover ${state.label}`}>
-                        <StateIcon aria-hidden className={cn("size-3.5", state.color)} />
-                        {state.label}
+                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={`Rover ${status.label}`}>
+                        <StatusIcon aria-hidden className={cn("size-3.5", status.color)} />
+                        {status.label}
                       </span>
                       <RoverUnits id={r.id} units={r.units} running={r.running_units ?? 0} onSet={app.setRoverUnits} />
                     </span>

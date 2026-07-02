@@ -13,7 +13,7 @@ export default function Page() {
 
   useEffect(() => {
     (async () => {
-      const me = await apiFetch("/api/v1/me");
+      const me = await apiFetch("/api/v1/users/me");
       if (me.status === 401) {
         const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
         storeAuthNextPath(next);

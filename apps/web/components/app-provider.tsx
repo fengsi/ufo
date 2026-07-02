@@ -7,7 +7,8 @@ import { WebSocketClient } from "@/lib/websocket";
 import { parseAppPath } from "@/lib/routes";
 import type {
   EnrollmentCode, Pilot, Comment, Crew, Fleet, Invitation, Label, Member, MyInvite, OperationReference, Signal, Mission, Operation,
-  Asset, AssetUploadIntent, OperationDetail, Routine, RoutineMetadata, RoutineOperationMetadata, Rover, Run, RunDetail, User,
+  Asset, AssetUploadIntent, OperationDetail, Routine, RoutineMetadata, RoutineOperationMetadata, Rover, Run, RunDetail, User, UserProfile,
+  Pulse,
 } from "@/lib/types";
 
 const OP_CODE_SEARCH_RE = /#?([A-Za-z0-9]+)-(\d+)/;
@@ -75,11 +76,15 @@ type Ctx = {
   selectedRun: string | null;
   setSelectedRun: (id: string | null) => void;
   runDetail: RunDetail | null;
+  selectedUserId: string | null;
+  userProfile: UserProfile | null;
+  openUser: (id: string | null) => void;
   // actions
   createOperation: (i: { title: string; body: string; mission_id: string | null; assignee_type: string | null; assignee_id: string | null; start_immediately?: boolean; sub_operations_enabled?: boolean; required_tags?: string[]; excluded_tags?: string[]; asset_ids?: string[]; priority?: number; main_operation_id?: string | null; start_date?: string | null; due_date?: string | null }) => Promise<Operation | null>;
   setOperationTags: (operationId: string, required_tags: string[], excluded_tags: string[]) => Promise<void>;
   setOperationWorktree: (operationId: string, enabled: boolean | null) => Promise<void>;
-  updateOperation: (operationId: string, input: { title?: string; body?: string }) => Promise<boolean>;
+  updateOperation: (operationId: string, input: { title?: string; body?: string; mission_id?: string }) => Promise<boolean>;
+  setOperationMission: (operationId: string, missionId: string) => Promise<boolean>;
   setPriority: (operationId: string, priority: number) => Promise<void>;
   setDates: (operationId: string, start_date: string | null, due_date: string | null) => Promise<void>;
   setMainOperation: (operationId: string, main_operation_id: string | null) => Promise<void>;
@@ -90,7 +95,7 @@ type Ctx = {
   createRoutine: (i: RoutineCreateInput) => Promise<Routine | null>;
   updateRoutine: (id: string, i: RoutineCreateInput) => Promise<Routine | null>;
   deleteRoutine: (id: string) => Promise<void>;
-  pulseRoutine: (id: string) => Promise<Operation | null>;
+  pulseRoutine: (id: string) => Promise<Pulse | null>;
   attachLabel: (operationId: string, labelId: string) => Promise<void>;
   detachLabel: (operationId: string, labelId: string) => Promise<void>;
   addRelation: (operationId: string, kind: string, target: string) => Promise<void>;
@@ -168,6 +173,10 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   const [operationDetail, setOperationDetail] = useState<OperationDetail | null>(null);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : parseAppPath(window.location.pathname).userId,
+  );
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
   const operationRef = useRef<string | null>(null); operationRef.current = selectedOperation;
   const operationBackStackRef = useRef<string[]>([]);
@@ -178,7 +187,10 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   const loadSignals = useCallback(async (f: string) => { const d = await getJSON<Signal[]>(withFleet("/api/v1/signals", f)); if (d) setSignals(d); }, []);
   const loadRovers = useCallback(async (f: string) => { const d = await getJSON<Rover[]>(withFleet("/api/v1/rovers", f)); if (d) setRovers(d); }, []);
   const loadRoutines = useCallback(async (f: string) => { const d = await getJSON<Routine[]>(withFleet("/api/v1/routines", f)); if (d) setRoutines(d); }, []);
-  const loadMissionCounts = useCallback(async (f: string) => { const d = await getJSON<Record<string, number>>(withFleet("/api/v1/missions/counts", f)); if (d) setMissionCounts(d); }, []);
+  const loadMissionCounts = useCallback(async (f: string) => {
+    const d = await getJSON<{ by_mission?: Record<string, number> }>(withFleet("/api/v1/missions/stats?metrics=by_mission", f));
+    if (d?.by_mission) setMissionCounts(d.by_mission);
+  }, []);
   const loadMembers = useCallback(async (f: string) => {
     const [m, inv] = await Promise.all([getJSON<Member[]>(fleetPath(f, "/members")), getJSON<Invitation[]>(withFleet("/api/v1/invitations", f))]);
     if (m) setMembers(m);
@@ -266,22 +278,48 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
 
   useEffect(() => { if (selectedOperation != null) loadOperationDetail(selectedOperation); else setOperationDetail(null); }, [fleet, selectedOperation, loadOperationDetail]);
   useEffect(() => { if (selectedRun != null) loadRunDetail(selectedRun); else setRunDetail(null); }, [fleet, selectedRun, loadRunDetail]);
+  useEffect(() => {
+    if (selectedUserId == null) {
+      setUserProfile(null);
+      return;
+    }
+    let canceled = false;
+    (async () => {
+      const profile = await getJSON<UserProfile>(`/api/v1/users/${selectedUserId}`);
+      if (canceled) return;
+      if (!profile) {
+        toast.error("Profile not found");
+        setSelectedUserId(null);
+        return;
+      }
+      setUserProfile(profile);
+    })();
+    return () => { canceled = true; };
+  }, [selectedUserId]);
 
   const switchFleet = useCallback((id: string) => {
     localStorage.setItem("ufo.fleet", id);
     operationBackStackRef.current = [];
-    setSelectedOperation(null); setOperationDetail(null); setSelectedRun(null); setRunDetail(null); setNewEnrollmentCode(null); setNewEnrollmentCodeId(null);
+    setSelectedOperation(null); setOperationDetail(null); setSelectedRun(null); setRunDetail(null);
+    setSelectedUserId(null); setUserProfile(null); setNewEnrollmentCode(null); setNewEnrollmentCodeId(null);
     setFleet(id);
   }, []);
   const signOut = useCallback(async () => { await postJSON(`/api/v1/auth/logout`); window.location.href = "/login"; }, []);
   const openOperation = useCallback((id: string | null) => {
     if (id == null) operationBackStackRef.current = [];
     else if (operationRef.current && operationRef.current !== id) operationBackStackRef.current.push(operationRef.current);
+    setSelectedUserId(null); setUserProfile(null);
     setSelectedOperation(id); setSelectedRun(null); setRunDetail(null);
   }, []);
   const backOperation = useCallback(() => {
     setSelectedOperation(operationBackStackRef.current.pop() ?? null);
     setSelectedRun(null); setRunDetail(null);
+  }, []);
+  const openUser = useCallback((id: string | null) => {
+    setSelectedOperation(null); setOperationDetail(null); setSelectedRun(null); setRunDetail(null);
+    operationBackStackRef.current = [];
+    setSelectedUserId(id);
+    if (id == null) setUserProfile(null);
   }, []);
 
   const fail = (res: Response, fallback: string) => res.json().then((d) => toast.error(d.error || fallback)).catch(() => toast.error(fallback));
@@ -323,7 +361,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     loadMeta(fleet);
   }, [fleet, fleets, loadMeta]);
   const updateUserName: Ctx["updateUserName"] = useCallback(async (name) => {
-    const res = await patchJSON("/api/v1/me", { name });
+    const res = await patchJSON("/api/v1/users/me", { name });
     if (!res.ok) { await fail(res, "Update name failed"); return false; }
     const next = (await res.json()) as User;
     setUser(next);
@@ -360,6 +398,14 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   const updateOperation: Ctx["updateOperation"] = useCallback(async (operationId, input) => {
     const res = await patchJSON(`/api/v1/operations/${operationId}`, input);
     if (!res.ok) { await fail(res, "Update operation failed"); return false; }
+    bumpBoard();
+    loadOperationDetail(operationId);
+    return true;
+  }, [fleet, bumpBoard, loadOperationDetail]);
+
+  const setOperationMission: Ctx["setOperationMission"] = useCallback(async (operationId, missionId) => {
+    const res = await patchJSON(`/api/v1/operations/${operationId}`, { mission_id: missionId });
+    if (!res.ok) { await fail(res, "Change mission failed"); return false; }
     bumpBoard();
     loadOperationDetail(operationId);
     return true;
@@ -424,11 +470,11 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     setRoutines((prev) => prev.filter((it) => it.id !== id));
   }, [fleet]);
   const pulseRoutine: Ctx["pulseRoutine"] = useCallback(async (id) => {
-    const res = await postJSON(`/api/v1/routines/${id}/pulse`);
+    const res = await postJSON(`/api/v1/pulses`, { routine_id: id });
     if (!res.ok) { await fail(res, "Pulse routine failed"); return null; }
-    const op = (await res.json()) as Operation;
+    const pulse = (await res.json()) as Pulse;
     bumpBoard(); loadMissionCounts(fleet); loadRoutines(fleet); toast.success("Pulse sent");
-    return op;
+    return pulse;
   }, [fleet, bumpBoard, loadMissionCounts, loadRoutines]);
   const attachLabel: Ctx["attachLabel"] = useCallback(async (operationId, labelId) => {
     await putJSON(`/api/v1/operations/${operationId}/labels/${labelId}`);
@@ -469,18 +515,21 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     const intent = (await intentRes.json()) as AssetUploadIntent;
     const uploadRes = await putRaw(intent.url, file, intent.headers);
     if (!uploadRes.ok) { toast.error("Upload failed"); return null; }
-    const completeRes = await patchJSON(`/api/v1/assets/${intent.asset_id}`, { state: "ready" });
+    const completeRes = await patchJSON(`/api/v1/assets/${intent.asset_id}`, { status: "ready" });
     if (!completeRes.ok) { await fail(completeRes, "Upload verification failed"); return null; }
     toast.success("File uploaded");
     return (await completeRes.json()) as Asset;
   }, [fleet]);
   const searchOperations: Ctx["searchOperations"] = useCallback(async (q) => {
-    const rows = (await getJSON<OperationReference[]>(withFleet(`/api/v1/operations/search?q=${encodeURIComponent(q)}`, fleet))) ?? [];
+    const toRef = (op: Operation): OperationReference => ({
+      id: op.id, title: op.title, status: op.status, sequence: op.sequence, mission_id: op.mission_id,
+    });
+    const rows = ((await getJSON<Operation[]>(withFleet(`/api/v1/operations?q=${encodeURIComponent(q)}`, fleet))) ?? []).map(toRef);
     if (rows.length > 0) return rows;
     const code = operationCodeSearch(q);
     if (!code) return rows;
     const mission = missions.find((m) => m.key.toUpperCase() === code.key);
-    const fallback = (await getJSON<OperationReference[]>(withFleet(`/api/v1/operations/search?q=${code.sequence}`, fleet))) ?? [];
+    const fallback = ((await getJSON<Operation[]>(withFleet(`/api/v1/operations?q=${code.sequence}`, fleet))) ?? []).map(toRef);
     return fallback.filter((op) => op.sequence === code.sequence && (!mission || op.mission_id === mission.id));
   }, [fleet, missions]);
   const react: Ctx["react"] = useCallback(async (kind, id, emoji, operationId, on = true) => {
@@ -490,7 +539,7 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadOperationDetail]);
 
   const cancelRun: Ctx["cancelRun"] = useCallback(async (runId, operationId) => {
-    const res = await postJSON(`/api/v1/runs/${runId}/cancel`);
+    const res = await patchJSON(`/api/v1/runs/${runId}`, { status: "canceled" });
     if (!res.ok) { await fail(res, "Stop failed"); return; }
     bumpBoard(); loadOperationDetail(operationId); toast.success("Run stopped");
   }, [fleet, bumpBoard, loadOperationDetail]);
@@ -644,12 +693,15 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }, [fleet, loadMembers]);
   const revokeInvite: Ctx["revokeInvite"] = useCallback(async (id) => { await del(`/api/v1/invitations/${id}`); loadMembers(fleet); }, [fleet, loadMembers]);
   const acceptInvite: Ctx["acceptInvite"] = useCallback(async (id, fleetId) => {
-    const res = await postJSON(`/api/v1/invitations/${id}/accept`);
+    const res = await patchJSON(`/api/v1/invitations/${id}`, { status: "accepted" });
     if (!res.ok) { await fail(res, "Accept failed"); return; }
     localStorage.setItem("ufo.fleet", fleetId);
     window.location.reload();
   }, []);
-  const declineInvite: Ctx["declineInvite"] = useCallback(async (id) => { await postJSON(`/api/v1/invitations/${id}/decline`); loadMyInvites(); }, [loadMyInvites]);
+  const declineInvite: Ctx["declineInvite"] = useCallback(async (id) => {
+    await patchJSON(`/api/v1/invitations/${id}`, { status: "declined" });
+    loadMyInvites();
+  }, [loadMyInvites]);
   const setMemberRole: Ctx["setMemberRole"] = useCallback(async (userId, role) => {
     const res = await patchJSON(`/api/v1/fleets/${fleet}/members/${userId}`, { role });
     if (!res.ok) { await fail(res, "Role change failed"); return; }
@@ -666,7 +718,8 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
     missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
     selectedOperation, openOperation, backOperation, operationDetail, selectedRun, setSelectedRun, runDetail,
-    createOperation, setOperationTags, setOperationWorktree, updateOperation, setPriority, setDates, setMainOperation, setArchived,
+    selectedUserId, userProfile, openUser,
+    createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
     createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
     reassign, cancelRun, moveOperation, addComment, updateComment, deleteComment,
     addCrew, renameCrew, delCrew, addMission, updateMission, setMissionWorktree, addMember, removeMember,
@@ -675,10 +728,10 @@ export function AppProvider({ user: initialUser, fleets: initialFleets, initialF
   }), [
     user, fleets, fleet, missions, missionCounts, pilots, crews, labels, routines, rovers, enrollmentCodes, signals, newEnrollmentCode, boardTick,
     members, myRole, fleetInvites, myInvites,
-    selectedOperation, operationDetail, selectedRun, runDetail,
+    selectedOperation, operationDetail, selectedRun, runDetail, selectedUserId, userProfile,
     updateUserName, switchFleet, createFleet, updateFleet, setFleetContext, setFleetWorktree, signOut,
-    openOperation, backOperation, setSelectedRun,
-    createOperation, setOperationTags, setOperationWorktree, updateOperation, setPriority, setDates, setMainOperation, setArchived,
+    openOperation, backOperation, setSelectedRun, openUser,
+    createOperation, setOperationTags, setOperationWorktree, updateOperation, setOperationMission, setPriority, setDates, setMainOperation, setArchived,
     createLabel, updateLabel, deleteLabel, createRoutine, updateRoutine, deleteRoutine, pulseRoutine, attachLabel, detachLabel, addRelation, removeRelation, createSourceAction, addPullRequest, deletePullRequest, uploadAsset, searchOperations, react,
     reassign, cancelRun, moveOperation, addComment, updateComment, deleteComment,
     addCrew, renameCrew, delCrew, addMission, updateMission, setMissionWorktree, addMember, removeMember,

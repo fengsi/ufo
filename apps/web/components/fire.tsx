@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import type { Operation } from "@/lib/types";
 
 export function onFire(op: Operation) {
-  return op.priority >= 4 && op.status !== "done" && op.status !== "cancelled";
+  return op.priority >= 4 && op.status !== "done" && op.status !== "canceled";
 }
 
 // Deterministic PRNG from a string seed.

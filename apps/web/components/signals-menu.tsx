@@ -5,6 +5,7 @@ import { Archive, Eye, type LucideIcon, MessageCircleQuestion, Radio, TriangleAl
 import { useApp } from "@/components/app-provider";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { resolveUserMention } from "@/lib/user-mentions";
 import { cn } from "@/lib/utils";
 
 const SEVERITY_COLOR: Record<string, string> = {
@@ -18,6 +19,17 @@ const TYPE_ICON: Record<string, LucideIcon> = {
   review_requested: Eye,
   task_failed: TriangleAlert,
 };
+
+function mentionedUserId(text: string, app: ReturnType<typeof useApp>): string | null {
+  const re = /@("([^"]+)"|([^\s@][^\s]*))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const token = (m[2] ?? m[3] ?? "").trim();
+    const hit = resolveUserMention(token, app.members, app.user);
+    if (hit) return hit.id;
+  }
+  return null;
+}
 
 export function SignalsMenu() {
   const app = useApp();
@@ -50,6 +62,7 @@ export function SignalsMenu() {
           <div className="max-h-[70vh] divide-y divide-border overflow-y-auto">
             {app.signals.map((it) => {
               const Icon = TYPE_ICON[it.type] ?? Radio;
+              const mentioned = mentionedUserId(it.title + " " + (it.body ?? ""), app);
               return (
                 <div
                   key={it.id}
@@ -64,7 +77,18 @@ export function SignalsMenu() {
                   <div className="min-w-0 flex-1">
                     <p className={cn("text-xs leading-snug", !it.read ? "font-semibold text-foreground" : "text-muted-foreground")}>{it.title}</p>
                     {it.body && <p className="line-clamp-2 text-xs text-muted-foreground">{it.body}</p>}
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{new Date(it.created_at).toLocaleString([], { hour12: false })}</p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      <span>{new Date(it.created_at).toLocaleString([], { hour12: false })}</span>
+                      {mentioned && (
+                        <button
+                          type="button"
+                          className="text-brand hover:underline"
+                          onClick={(e) => { e.stopPropagation(); app.openUser(mentioned); setOpen(false); }}
+                        >
+                          Profile
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {!it.read && <span className="mt-1.5 size-2 shrink-0 rounded-full bg-brand" title="Unread" />}
                   <Button

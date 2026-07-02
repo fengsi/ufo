@@ -2,10 +2,63 @@
 
 All notable changes to UFO are recorded here.
 
-> **Public beta compatibility notice:** releases before 1.0 do not guarantee
-> API, database, configuration, rover-protocol, or behavioral compatibility.
-> Back up before upgrading; tagged release notes call out upgrade caveats, and
-> arbitrary source commits may not include a supported upgrade path.
+> **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
+> releases; release notes call out anything that needs a careful upgrade.
+
+## [0.5.0] — 2026-07-01
+
+Public beta feature release. Advances the database schema and API surface
+(profiles, mission moves, pulses, and related Hub work). Prefer a fresh local
+Hub DB when coming from 0.3.x. Rover CLI **0.5.0+**.
+
+### Profiles & mutual fleets
+- Split signed-in **Me** updates from public **user profiles**
+  (`GET /v1/users/{id}`), with profile links from mentions, the board, crews,
+  and signals.
+- Added **mutual fleets** on user profiles (fleets the viewer shares with that
+  user) without exposing unrelated memberships.
+
+### Missions, operations & context
+- Allowed moving a **main operation** (and its sub-operations) to another
+  mission in the **same fleet**: new per-mission sequences, cleared pilot
+  sessions so the next run is not a stale resume, system communications, and
+  durable `metadata.mission_move` for the properties rail.
+- Added a mission-move confirmation in the operation UI that requires typing
+  the current display code (`KEY-seq`).
+- Stacked **fleet → mission → operation** context into pilot prompts; on
+  conflict, operation wins over mission over fleet. After a mission move,
+  context always comes from the operation’s **current** mission.
+- Tightened run lifecycle fences around **`finalized_at`**, accept/result
+  paths, and status updates so cancel, heartbeat, and requeue respect terminal
+  runs.
+
+### Pulses & routines
+- Added first-class **pulses** for routine execution history (schema, list/get
+  APIs, and change notifications) alongside routine pulse creation.
+
+### Rover enrollment & outpost
+- Aligned flags for single and multi-rover enrollment: `--hub`, `--code`,
+  `--name`, `--units` / `UFO_ROVER_UNITS`, and `--tags` (comma-separated; `:`
+  allowed inside a tag). Multi-rover enrollment uses repeatable `--config`
+  with pipe-separated `key=value` fields and `\|` escapes.
+- Applied enroll env fallbacks for both single and multi-rover paths:
+  `UFO_HUB_URL`, `UFO_ROVER_ENROLLMENT_CODE`, and `UFO_ROVER_UNITS` after
+  explicit flags/fields.
+- Kept `ufo rover start` driven by local `rovers.json` and live hub config for
+  identity and concurrency, rather than treating enroll-time overrides as the
+  long-term source of truth.
+- Improved the outpost TUI: separate **hub** and **fleet** columns, a
+  **VERSION** banner metric, hub host shown as `host (version)`, and layout
+  fixes so list and detail rows fit the frame without spurious ellipsis.
+- Standardized ready-for-operation wording in docs and status copy (away from
+  “listening” as the product verb).
+
+### Protocol & deploy
+- Expanded the OpenAPI contract for users, operations, assets, routines,
+  pulses, labels, mission stats, and run status patches; kept list filters on
+  GET query parameters and fleet identity on bodies or resource paths.
+- Added Hub database URL helpers and refreshed configuration examples for
+  deploy.
 
 ## [0.3.1] — 2026-06-30
 
@@ -65,7 +118,7 @@ upgrading, and expect to reset dev databases or migrate them manually.
 - Added previews for images, PDFs, Markdown, JSON, code, and text files, with
   modal previews, keyboard navigation, copy actions, and asset links rendered
   inline from operation and comment Markdown.
-- Added asset-aware operation creation, comments, routines, and pilot claim
+- Added asset-aware operation creation, comments, routines, and pilot accept
   prompts without inlining file bytes into prompts.
 
 ### Routines & operations
@@ -217,7 +270,7 @@ First public preview release.
 
 ### Operations board
 - Default drag-and-drop **Kanban** board across statuses (backlog, todo,
-  in_progress, in_review, done, blocked, cancelled), plus **List** and
+  in_progress, in_review, done, blocked, canceled), plus **List** and
   **Lanes** views.
 - Customizable columns and card properties, filters (priority / assignee /
   creator / label), and sorting.
@@ -260,7 +313,7 @@ First public preview release.
   dispatch.
 - One-time enrollment codes are consumed atomically, and fleet owner changes
   preserve at least one owner.
-- Stateless API instances coordinate migration and run claims through
+- Stateless API instances coordinate migration and run accepts through
   PostgreSQL locking.
 
 ### Protocol & development

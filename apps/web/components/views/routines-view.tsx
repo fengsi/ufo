@@ -49,7 +49,7 @@ function formatPulseTime(value: string | null, fallback: string) {
 }
 
 function routineTrigger(routine: Routine) {
-  return routine.metadata.trigger ?? { type: "manual" as RoutineTriggerType };
+  return routine.metadata.trigger ?? { kind: "manual" as RoutineTriggerType };
 }
 
 function routineOperation(routine: Routine) {
@@ -108,7 +108,7 @@ export function RoutinesView() {
       title: title.trim(),
       body: body.trim(),
       metadata: {
-        trigger: { type: triggerType, ...(triggerType === "schedule" ? { cron: cron.trim() } : {}) },
+        trigger: { kind: triggerType, ...(triggerType === "schedule" ? { cron: cron.trim() } : {}) },
         operation: {
           start_immediately: autoDispatch,
           priority: Number(priority),
@@ -148,7 +148,7 @@ export function RoutinesView() {
     setAssignee(nextAssignee);
     setDispatchAfterPulse(operation.start_immediately ?? canDispatchAssignee(nextAssignee, app.crews));
     setPriority(String(operation.priority ?? 0));
-    setTriggerType((trigger.type ?? "manual") === "schedule" ? "schedule" : "manual");
+    setTriggerType((trigger.kind ?? "manual") === "schedule" ? "schedule" : "manual");
     setCron(trigger.cron ?? "@daily");
     setContext(routineContext(routine));
     setRequiredTags(operation.required_tags ?? []);
@@ -361,14 +361,14 @@ function RoutineRow({ routine, editing, onEdit }: { routine: Routine; editing: b
   const requiredTags = operation.required_tags ?? [];
   const excludedTags = operation.excluded_tags ?? [];
   const context = routineContext(routine);
-  const triggerType = trigger.type ?? "manual";
+  const triggerType = trigger.kind ?? "manual";
   const priority = operation.priority ?? 0;
 
   async function pulse() {
     setPulsing(true);
     try {
-      const op = await app.pulseRoutine(routine.id);
-      if (op) app.openOperation(op.id);
+      const pulse = await app.pulseRoutine(routine.id);
+      if (pulse?.operation_id) app.openOperation(pulse.operation_id);
     } finally {
       setPulsing(false);
     }

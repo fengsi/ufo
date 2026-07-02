@@ -232,7 +232,13 @@ function MemberRow({ crewId, m, canManage }: { crewId: string; m: CrewMember; ca
   return (
     <li className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted/50">
       {isPilot ? <PilotIcon kind={m.member_id} /> : <UserRound className="size-4 text-muted-foreground" />}
-      <span className="flex-1 truncate">{name}</span>
+      {isPilot ? (
+        <span className="flex-1 truncate">{name}</span>
+      ) : (
+        <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" onClick={() => app.openUser(m.member_id)}>
+          {name}
+        </button>
+      )}
       {m.role === "captain" && <Badge variant="secondary" className="gap-1 text-[10px]"><Shield className="size-3.5" /> Captain</Badge>}
       <span className="text-[10px] uppercase text-muted-foreground">{isPilot ? "pilot" : "person"}</span>
       {canManage && <Button variant="ghost" size="icon-sm" onClick={() => app.removeMember(crewId, m.member_type, m.member_id)}><X /></Button>}

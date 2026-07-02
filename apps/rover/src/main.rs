@@ -1,6 +1,6 @@
 //! UFO local rover.
 //!
-//! Long-poll claims queued runs from the Hub, lets the assigned pilot
+//! Accepts queued runs from the Hub, lets the assigned pilot
 //! drive the rover, streams typed messages back, captures
 //! the resulting `git diff`, and reports a terminal state.
 
@@ -52,13 +52,12 @@ const APP_FULL_NAME: &str = "Unified Fleet Orchestrator";
 const SELECT_MARKER: &str = "›";
 const BACK_MARKER: &str = "‹";
 const ROVER_NAME_WIDTH: usize = 24;
-const ROVER_STATE_WIDTH: usize = 11;
+const ROVER_STATUS_WIDTH: usize = 11;
 const RUN_WIDTH: usize = 10;
 const UNIT_WIDTH: usize = 8;
 const PILOT_WIDTH: usize = 12;
 const EVENT_TIME_WIDTH: usize = 8;
 const EVENT_KIND_WIDTH: usize = 6;
-const ROVER_TAIL_WIDTH: usize = 56;
 const OPERATION_TAIL_WIDTH: usize = 56;
 const EVENT_MESSAGE_TAIL_WIDTH: usize = 40;
 const RUN_LOG_ROWS: usize = 8;
@@ -70,7 +69,7 @@ const TUI_ACCENT: Rgb = (0, 198, 255);
 const TUI_TEXT: Rgb = (215, 225, 238);
 const TUI_DIM: Rgb = (125, 135, 150);
 const TUI_HELP_KEY: Rgb = (235, 242, 255);
-const TUI_REV: Rgb = (255, 232, 190);
+const TUI_VERSION: Rgb = (255, 232, 190);
 const TUI_RUNNING: Rgb = (255, 210, 87);
 const TUI_WARN: Rgb = (255, 220, 120);
 const TUI_ERROR: Rgb = (255, 89, 117);
@@ -160,29 +159,37 @@ enum RoverAction {
         #[arg(long, env = "UFO_HUB_URL", default_value = "http://localhost:8080")]
         hub: String,
         /// Enrollment code (one-time or reusable) from the fleet's Rovers panel.
-        /// Omit to approve this rover in the browser instead.
-        #[arg(long, env = "UFO_ROVER_ENROLLMENT_CODE", allow_hyphen_values = true)]
-        enrollment_code: Option<String>,
+        /// Omit to approve this rover in the browser instead. Same as code= in --config.
+        #[arg(
+            long = "code",
+            env = "UFO_ROVER_ENROLLMENT_CODE",
+            allow_hyphen_values = true
+        )]
+        code: Option<String>,
         /// Rover name (defaults to the hostname).
         #[arg(long)]
         name: Option<String>,
         /// Initial units to seed hub-side (1-100 operations this rover runs at once).
-        #[arg(long, default_value_t = 1)]
+        /// Last fallback after --units / units= is UFO_ROVER_UNITS, then 1.
+        #[arg(long, env = "UFO_ROVER_UNITS", default_value_t = 1)]
         units: usize,
-        /// User tag(s) for dispatch matching; repeatable, e.g. --tag gpu --tag region:us.
-        #[arg(long = "tag")]
+        /// User dispatch tags (comma-separated). Same form as tags= in --config.
+        /// e.g. --tags gpu,region:us
+        #[arg(long, value_delimiter = ',')]
         tags: Vec<String>,
         /// Prompt on stdin for hub, method, name, units, and tags.
         #[arg(long)]
         interactive: bool,
-        /// Enroll several code-based rovers at once; repeatable. Spec is comma-separated
-        /// key=value (keys: code, hub, name, units, tags where tags is :-separated).
-        #[arg(long = "rover")]
-        rover: Vec<String>,
+        /// Enroll several code-based rovers at once; repeatable. Same params as single
+        /// enroll, packaged as pipe-separated key=value: hub, code, name, units, tags.
+        /// Escape a literal | as \|. tags is comma-separated (tags may contain :).
+        /// e.g. --config 'hub=https://h.example|code=ABC|name=orion|units=2|tags=gpu,region:us'
+        #[arg(long = "config")]
+        config: Vec<String>,
         /// Keep the old log-oriented daemon output after enrollment.
         #[arg(long)]
         headless: bool,
-        /// Seconds to wait after a failed claim (hub unreachable) before retrying.
+        /// Seconds to wait after a failed accept (hub unreachable) before retrying.
         #[arg(long, env = "UFO_ROVER_RETRY_SECONDS", default_value_t = 1)]
         retry_seconds: u64,
         /// Upgrade and restart when the Hub requires a newer rover.
@@ -217,7 +224,7 @@ enum RoverAction {
         #[arg(long = "install-dir", env = "UFO_ROVER_INSTALL_DIR")]
         install_dir: Option<PathBuf>,
     },
-    /// Run the claim/execute loop for one or (by default) all enrolled rovers.
+    /// Run the accept/execute loop for one or (by default) all enrolled rovers.
     Start {
         /// Run just this rover id. Omit to run every enrolled rover.
         #[arg(long)]
@@ -225,7 +232,7 @@ enum RoverAction {
         /// Keep the old log-oriented daemon output for CI/supervisors.
         #[arg(long)]
         headless: bool,
-        /// Seconds to wait after a failed claim (hub unreachable) before retrying.
+        /// Seconds to wait after a failed accept (hub unreachable) before retrying.
         #[arg(long, env = "UFO_ROVER_RETRY_SECONDS", default_value_t = 1)]
         retry_seconds: u64,
         /// Startup fallback units (1-100) until hub-owned config is available.
@@ -241,16 +248,16 @@ enum RoverAction {
     },
 }
 
-/// Rover-facing view of a claimed run (matches the API's ClaimedRun).
+/// Rover-facing view of an accepted run (matches the API's AcceptedRun).
 #[derive(Debug, Deserialize)]
-struct ClaimedRun {
+struct AcceptedRun {
     id: String,
     operation_id: String,
     operation_worktree_name: String,
     operation_created_at: String,
     worktree_enabled: bool,
     #[allow(dead_code)]
-    state: String,
+    status: String,
     #[serde(default)]
     pilot: String,
     #[serde(default)]
@@ -260,11 +267,11 @@ struct ClaimedRun {
     #[serde(default)]
     can_propose_sub_operations: bool,
     #[serde(default)]
-    assets: Vec<ClaimedAsset>,
+    assets: Vec<AcceptedAsset>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ClaimedAsset {
+struct AcceptedAsset {
     id: String,
     filename: String,
     #[serde(default)]
@@ -275,7 +282,7 @@ struct ClaimedAsset {
 }
 
 #[derive(Debug, Deserialize)]
-struct ClaimedSourceAction {
+struct AcceptedSourceAction {
     id: String,
     operation_id: String,
     operation_title: String,
@@ -411,12 +418,12 @@ async fn main() -> Result<()> {
         Commands::Rover { action } => match action {
             RoverAction::Enroll {
                 hub,
-                enrollment_code,
+                code,
                 name,
                 units,
                 tags,
                 interactive,
-                rover,
+                config,
                 headless,
                 retry_seconds,
                 auto_upgrade,
@@ -424,12 +431,12 @@ async fn main() -> Result<()> {
             } => {
                 cmd_enroll(EnrollArgs {
                     hub,
-                    enrollment_code,
+                    code,
                     name,
                     units,
                     tags,
                     interactive,
-                    rover,
+                    config,
                     headless,
                     retry_seconds,
                     auto_upgrade,
@@ -463,7 +470,7 @@ fn default_outpost() -> PathBuf {
 
 fn http_client() -> Client {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    // Timeout must exceed the hub's claim long-poll (default 25s); other calls quick.
+    // Timeout must exceed the hub accept wait (default 25s); other calls quick.
     Client::builder()
         .default_headers(rover_headers())
         .timeout(Duration::from_secs(60))
@@ -589,12 +596,12 @@ async fn detect_auto_tags() -> Vec<String> {
 
 struct EnrollArgs {
     hub: String,
-    enrollment_code: Option<String>,
+    code: Option<String>,
     name: Option<String>,
     units: usize,
     tags: Vec<String>,
     interactive: bool,
-    rover: Vec<String>,
+    config: Vec<String>,
     headless: bool,
     retry_seconds: u64,
     auto_upgrade: bool,
@@ -604,19 +611,19 @@ struct EnrollArgs {
 async fn cmd_enroll(args: EnrollArgs) -> Result<()> {
     let EnrollArgs {
         hub,
-        enrollment_code,
+        code,
         name,
         units,
         tags,
         interactive,
-        rover,
+        config,
         headless,
         retry_seconds,
         auto_upgrade,
         outpost,
     } = args;
-    if !rover.is_empty() {
-        cmd_enroll_multi(rover).await?;
+    if !config.is_empty() {
+        cmd_enroll_multi(config).await?;
         return start_after_enroll(headless, retry_seconds, auto_upgrade, outpost).await;
     }
     if interactive {
@@ -629,7 +636,7 @@ async fn cmd_enroll(args: EnrollArgs) -> Result<()> {
         _ => None,
     };
     let units = validate_rover_units(units)?;
-    match enrollment_code {
+    match code {
         Some(code) => enroll_code(&client, &hub, &code, nm, units, tags).await,
         None => enroll_web(&client, &hub, nm, units, tags).await,
     }?;
@@ -687,7 +694,7 @@ fn discovery_web_url(discovery: &serde_json::Value) -> Option<String> {
     (!web_url.is_empty()).then(|| web_url.trim_end_matches('/').to_string())
 }
 
-/// Web enrollment: open browser approval when possible, then poll the normal
+/// Web enrollment: open browser approval when possible, then check the normal
 /// exchange until the locally generated code is registered by the browser.
 async fn enroll_web(
     client: &Client,
@@ -739,18 +746,18 @@ async fn enroll_web(
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 let message =
                     response_error_message(status, &resp.text().await.unwrap_or_default());
-                if let Some(err) = web_enrollment_poll_error(status, &message) {
+                if let Some(err) = web_enrollment_check_error(status, &message) {
                     return Err(anyhow!(err));
                 }
                 if status == StatusCode::FORBIDDEN {
-                    return Err(anyhow!("enrollment poll returned {status}: {message}"));
+                    return Err(anyhow!("enrollment check returned {status}: {message}"));
                 }
                 if std::time::Instant::now() >= deadline {
                     return Err(anyhow!("enrollment timed out — code was not approved"));
                 }
                 sleep(interval).await;
             }
-            _ => return Err(hub_status_error("enrollment poll", resp).await),
+            _ => return Err(hub_status_error("enrollment check", resp).await),
         }
     }
 }
@@ -787,10 +794,7 @@ async fn cmd_enroll_interactive() -> Result<()> {
         value => value.parse::<usize>()?,
     };
     let units = validate_rover_units(units)?;
-    let tags: Vec<String> = prompt_line("Tags (space-separated): ")?
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
+    let tags = parse_tags_list(&prompt_line("Tags (comma-separated): ")?);
     let client = http_client();
     if method.eq_ignore_ascii_case("code") {
         let code = prompt_line("Enrollment code: ")?;
@@ -800,43 +804,101 @@ async fn cmd_enroll_interactive() -> Result<()> {
     }
 }
 
-/// Enroll several code-based rovers from `key=value` specs in one command.
+/// Enroll several code-based rovers from pipe-separated `key=value` --config specs.
+/// Same params as single enroll: hub, code, name, units, tags.
+/// Per-field order: config key → matching env (hub/code/units) → default.
 async fn cmd_enroll_multi(specs: Vec<String>) -> Result<()> {
     let client = http_client();
     for spec in specs {
-        let fields = parse_rover_spec(&spec);
-        let code = fields
-            .get("code")
-            .ok_or_else(|| anyhow!("--rover spec missing code=: {spec}"))?
-            .clone();
-        let hub = fields
-            .get("hub")
-            .cloned()
+        let fields = parse_enroll_config(&spec);
+        let code =
+            field_or_env(fields.get("code"), "UFO_ROVER_ENROLLMENT_CODE").ok_or_else(|| {
+                anyhow!("--config missing code= and UFO_ROVER_ENROLLMENT_CODE unset: {spec}")
+            })?;
+        let hub = field_or_env(fields.get("hub"), "UFO_HUB_URL")
             .unwrap_or_else(|| "http://localhost:8080".to_string());
         let name = fields.get("name").cloned().filter(|n| !n.is_empty());
         let units = fields
             .get("units")
             .and_then(|u| u.parse::<usize>().ok())
+            .or_else(|| env_nonempty("UFO_ROVER_UNITS")?.parse().ok())
             .unwrap_or(1);
         let units = validate_rover_units(units)?;
-        let tags: Vec<String> = fields
+        let tags = fields
             .get("tags")
-            .map(|t| {
-                t.split(':')
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
+            .map(|t| parse_tags_list(t))
             .unwrap_or_default();
         enroll_code(&client, &hub, &code, name, units, tags).await?;
     }
     Ok(())
 }
 
-fn parse_rover_spec(spec: &str) -> HashMap<String, String> {
-    spec.split(',')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+/// Non-empty process env value, if set.
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
+}
+
+/// Prefer a non-empty config/CLI field, else the named env var.
+fn field_or_env(field: Option<&String>, env_key: &str) -> Option<String> {
+    field
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .or_else(|| env_nonempty(env_key))
+}
+
+/// Split a multi-enroll --config value on unescaped `|` (`\|` → literal `|`).
+fn split_enroll_config_fields(spec: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut escape = false;
+    for c in spec.chars() {
+        if escape {
+            if c == '|' {
+                cur.push('|');
+            } else {
+                cur.push('\\');
+                cur.push(c);
+            }
+            escape = false;
+            continue;
+        }
+        if c == '\\' {
+            escape = true;
+            continue;
+        }
+        if c == '|' {
+            fields.push(std::mem::take(&mut cur));
+            continue;
+        }
+        cur.push(c);
+    }
+    if escape {
+        cur.push('\\');
+    }
+    fields.push(cur);
+    fields
+}
+
+fn parse_enroll_config(spec: &str) -> HashMap<String, String> {
+    split_enroll_config_fields(spec)
+        .into_iter()
+        .filter_map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                return None;
+            }
+            let (key, value) = pair.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Comma-separated user tags (may contain `:`). Empty segments dropped.
+fn parse_tags_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
         .collect()
 }
 
@@ -1419,7 +1481,7 @@ fn dashboard_rover_error(dashboard: &Option<Dashboard>, rover_id: &str, error: S
     );
 }
 
-fn dashboard_run_started(dashboard: &Option<Dashboard>, rover_id: &str, run: &ClaimedRun) {
+fn dashboard_run_started(dashboard: &Option<Dashboard>, rover_id: &str, run: &AcceptedRun) {
     with_dashboard(dashboard, |state| {
         if let Some(rover) = state.rovers.get_mut(rover_id) {
             let unit = next_rover_unit(rover);
@@ -1437,10 +1499,10 @@ fn dashboard_run_started(dashboard: &Option<Dashboard>, rover_id: &str, run: &Cl
     });
     dashboard_run_event(
         dashboard,
-        "claim",
+        "accept",
         Some(&run.id),
         format!(
-            "{} claimed {} for {}",
+            "{} accepted {} for {}",
             short_id(rover_id),
             short_id(&run.id),
             short_id(&run.operation_id)
@@ -1453,7 +1515,7 @@ fn dashboard_run_finished(dashboard: &Option<Dashboard>, rover_id: &str, run_id:
         if let Some(rover) = state.rovers.get_mut(rover_id) {
             rover.running.remove(run_id);
             rover.status = if rover.running.is_empty() {
-                "polling".to_string()
+                "ready".to_string()
             } else {
                 "running".to_string()
             };
@@ -2191,7 +2253,7 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
         .max()
         .unwrap_or(1);
     let metrics = [
-        text_metric("REV", env!("CARGO_PKG_VERSION"), TUI_REV),
+        text_metric("VERSION", env!("CARGO_PKG_VERSION"), TUI_VERSION),
         String::new(),
         metric("SLOTS", slots, TUI_METRIC_SLOTS, value_width),
         metric("RUNS", running, TUI_WARN, value_width),
@@ -2251,40 +2313,32 @@ fn render_dashboard_frame(state: &Dashboard, outpost: &Path) -> String {
     } else if let Some(rover) = rover_detail {
         push_rover_detail(&mut out, width, rover, snapshot.selected_rover_unit);
     } else {
+        let (hub_w, fleet_w) = rover_hub_fleet_widths(width.saturating_sub(4));
         let header = format!(
-            "  {:<ROVER_NAME_WIDTH$}  {:<ROVER_STATE_WIDTH$}  {:<RUN_WIDTH$}  {}",
-            "rover", "state", "runs/units", "hub / fleet",
+            "  {:<ROVER_NAME_WIDTH$}  {:<ROVER_STATUS_WIDTH$}  {:<RUN_WIDTH$}  {:<hub_w$}  {:<fleet_w$}",
+            "name", "status", "units", "hub", "fleet",
         );
         push_row(&mut out, width, &dim(&header));
         let selected = snapshot.selected_rover.min(rovers.len().saturating_sub(1));
         for (i, rover) in rovers.iter().enumerate() {
-            let state = status_pill(&rover.runtime.status);
-            let hub_fleet = hub_fleet_label(&rover.runtime);
+            let status = status_pill(&rover.runtime.status);
             let marker = if snapshot.focus == DashboardFocus::Rovers && i == selected {
                 paint(SELECT_MARKER, TUI_ACCENT)
             } else {
                 " ".to_string()
             };
             let row = format!(
-                "{} {}  {}  {}  {}",
+                "{} {}  {}  {}  {}  {}",
                 marker,
-                pad_visible(
-                    &truncate_field(
-                        &format!("{} {}", rover.runtime.name, short_id(&rover.id)),
-                        ROVER_NAME_WIDTH
-                    ),
-                    ROVER_NAME_WIDTH,
-                ),
-                pad_visible(&state, ROVER_STATE_WIDTH),
-                pad_visible(
-                    &format!("{}/{}", rover.runtime.running.len(), rover.runtime.units),
-                    RUN_WIDTH
-                ),
-                truncate_field(&hub_fleet, width.saturating_sub(ROVER_TAIL_WIDTH))
+                fit_field(&rover.runtime.name, ROVER_NAME_WIDTH),
+                fit_field(&status, ROVER_STATUS_WIDTH),
+                fit_field(&rover.runtime.units.to_string(), RUN_WIDTH),
+                fit_field(&rover_hub_label(&rover.runtime), hub_w),
+                fit_field(&rover.runtime.fleet, fleet_w),
             );
             push_row(&mut out, width, &row);
             for (unit, run) in rover_unit_rows(&rover.runtime) {
-                push_rover_unit_row(&mut out, width, unit, run);
+                push_rover_unit_row(&mut out, width, unit, run, false);
             }
         }
     }
@@ -2761,16 +2815,23 @@ fn push_rover_unit_row(
     width: usize,
     unit: usize,
     run: Option<(&String, &RunRuntime)>,
+    selected: bool,
 ) {
+    let inner = width.saturating_sub(4);
+    let fixed = 2 + ROVER_NAME_WIDTH + 2 + ROVER_STATUS_WIDTH + 2 + RUN_WIDTH + 2;
+    let detail_w = inner.saturating_sub(fixed);
+    // Always 2 cells so list/detail slot columns stay aligned.
+    let lead = if selected {
+        pad_visible(&paint(SELECT_MARKER, TUI_ACCENT), 2)
+    } else {
+        "  ".to_string()
+    };
     let label = nested_unit_label(unit);
     let (state, run_id, detail) = if let Some((run_id, run)) = run {
         (
             status_pill("running"),
             paint(short_id(run_id), TUI_RUNNING),
-            truncate_field(
-                &format!("{} {}", run.pilot, run.operation_id),
-                width.saturating_sub(ROVER_TAIL_WIDTH),
-            ),
+            truncate_field(&format!("{} {}", run.pilot, run.operation_id), detail_w),
         )
     } else {
         (status_pill("standby"), String::new(), String::new())
@@ -2779,59 +2840,37 @@ fn push_rover_unit_row(
         out,
         width,
         &format!(
-            "  {}  {}  {}  {}",
-            pad_visible(&label, ROVER_NAME_WIDTH),
-            pad_visible(&state, ROVER_STATE_WIDTH),
-            pad_visible(&run_id, RUN_WIDTH),
-            detail
+            "{lead}{}  {}  {}  {}",
+            fit_field(&label, ROVER_NAME_WIDTH),
+            fit_field(&state, ROVER_STATUS_WIDTH),
+            fit_field(&run_id, RUN_WIDTH),
+            pad_visible(&detail, detail_w),
         ),
     );
 }
 
 fn push_rover_detail(out: &mut String, width: usize, rover: &DashboardRover, selected_unit: usize) {
+    let inner = width.saturating_sub(4);
+    let back = paint(BACK_MARKER, TUI_ACCENT);
+    let left = format!(
+        "{back} {}",
+        fit_field(&rover.runtime.name, ROVER_NAME_WIDTH),
+    );
+    let rest = inner.saturating_sub(visible_len(&left) + 4);
+    let hub_w = (rest / 2).max(3);
+    let fleet_w = rest.saturating_sub(hub_w).max(3);
     push_row(
         out,
         width,
         &format!(
-            "  {}  {}  {}",
-            dim(&rover.runtime.name),
-            status_pill(&rover.runtime.status),
-            dim(&format!(
-                "{} runs / {} units",
-                rover.runtime.running.len(),
-                rover.runtime.units
-            ))
+            "{left}  {}  {}",
+            fit_field(&rover_hub_label(&rover.runtime), hub_w),
+            fit_field(&rover.runtime.fleet, fleet_w),
         ),
     );
-    push_detail_line(out, width, &rover.id, true);
-    push_detail_line(out, width, &hub_label(&rover.runtime), false);
+
     for (i, (unit, run)) in rover_unit_rows(&rover.runtime).into_iter().enumerate() {
-        let marker = if i == selected_unit {
-            paint(SELECT_MARKER, TUI_ACCENT)
-        } else {
-            " ".to_string()
-        };
-        let label = dim(&unit_label(unit));
-        if let Some((run_id, run)) = run {
-            push_row(
-                out,
-                width,
-                &format!(
-                    "{marker} {}  {}  {}  {} {}",
-                    label,
-                    status_pill("running"),
-                    pilot_badge(&run.pilot),
-                    run_id,
-                    run.operation_id
-                ),
-            );
-        } else {
-            push_row(
-                out,
-                width,
-                &format!("{marker} {}  {}", label, status_pill("standby")),
-            );
-        }
+        push_rover_unit_row(out, width, unit, run, i == selected_unit);
     }
 }
 
@@ -2927,7 +2966,7 @@ fn status_pill(status: &str) -> String {
         "running" => TUI_RUNNING,
         "error" => TUI_ERROR,
         "standby" => TUI_STANDBY,
-        "polling" => TUI_ACCENT,
+        "ready" => TUI_ACCENT,
         _ => TUI_MUTED,
     };
     format!("{} {}", paint("●", color), paint(status, color))
@@ -2936,7 +2975,7 @@ fn status_pill(status: &str) -> String {
 fn event_level(level: &str) -> String {
     let color = match level {
         "error" => TUI_ERROR,
-        "claim" => TUI_RUNNING,
+        "accept" => TUI_RUNNING,
         "end" => TUI_SUCCESS,
         _ => TUI_ACCENT,
     };
@@ -2991,12 +3030,20 @@ fn fleet_label_parts<'a>(fleet_id: Option<&'a str>, fleet_name: Option<&'a str>)
     fleet_name.or(fleet_id).unwrap_or("-")
 }
 
-fn hub_label(rover: &RoverRuntime) -> String {
-    format!("{} (rev {})", hub_fleet_label(rover), rover.hub_version)
+fn rover_hub_fleet_widths(inner_width: usize) -> (usize, usize) {
+    let fixed = 1 + 1 + ROVER_NAME_WIDTH + 2 + ROVER_STATUS_WIDTH + 2 + RUN_WIDTH + 2 + 2;
+    let rest = inner_width.saturating_sub(fixed).max(4);
+    let hub_w = rest / 2;
+    let fleet_w = rest.saturating_sub(hub_w);
+    (hub_w.max(3), fleet_w.max(3))
 }
 
-fn hub_fleet_label(rover: &RoverRuntime) -> String {
-    format!("{} / {}", rover.hub, rover.fleet)
+fn rover_hub_label(rover: &RoverRuntime) -> String {
+    if rover.hub_version.is_empty() || rover.hub_version == "?" {
+        rover.hub.clone()
+    } else {
+        format!("{} ({})", rover.hub, rover.hub_version)
+    }
 }
 
 fn short_id(id: &str) -> &str {
@@ -3027,6 +3074,10 @@ fn pad_visible(value: &str, width: usize) -> String {
         value,
         " ".repeat(width.saturating_sub(visible_len(value)))
     )
+}
+
+fn fit_field(value: &str, width: usize) -> String {
+    pad_visible(&truncate_field(value, width), width)
 }
 
 fn visible_len(value: &str) -> usize {
@@ -3145,7 +3196,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// One rover's claim/execute loop.
+/// One rover's accept/execute loop.
 #[allow(clippy::too_many_arguments)]
 async fn rover_loop(
     rover_id: &str,
@@ -3215,10 +3266,10 @@ async fn rover_loop(
     dashboard_rover_units(&dashboard, rover_id, units);
     let fleet = fleet_label(&entry);
     logline!(
-        "rover {} ({rover_id}) started — hub={hub} fleet={fleet} long-polling (units={units})",
+        "rover {} ({rover_id}) started — hub={hub} fleet={fleet} ready for operation (units={units})",
         entry.name
     );
-    dashboard_rover_status(&dashboard, rover_id, "polling");
+    dashboard_rover_status(&dashboard, rover_id, "ready");
     let auto_tags = caps.auto_tags();
     logline!(
         "rover {} ({rover_id}) auto-tags: {}",
@@ -3280,13 +3331,13 @@ async fn rover_loop(
             );
             return Ok(());
         }
-        // Acquire a slot *before* claiming, so we never hold more work than we can run.
+        // Acquire a slot *before* accepting, so we never hold more work than we can run.
         let permit = sem.clone().acquire_owned().await?;
         if revoked.load(Ordering::Relaxed) {
             drop(permit);
             continue;
         }
-        dashboard_rover_waiting(&dashboard, rover_id, "polling");
+        dashboard_rover_waiting(&dashboard, rover_id, "ready");
         if tokio::time::Instant::now() >= next_auto_tag_refresh {
             next_auto_tag_refresh =
                 tokio::time::Instant::now() + Duration::from_secs(AUTO_TAG_REFRESH_SECONDS);
@@ -3329,7 +3380,7 @@ async fn rover_loop(
             }
         }
 
-        match claim_source_action(&client, &hub, &token).await {
+        match accept_source_action(&client, &hub, &token).await {
             Ok(Some(action)) => {
                 let client = client.clone();
                 let hub = hub.clone();
@@ -3381,7 +3432,7 @@ async fn rover_loop(
                     )
                     .await;
                     active_runs.fetch_sub(1, Ordering::Relaxed);
-                    dashboard_rover_waiting(&dashboard, &rover_id, "polling");
+                    dashboard_rover_waiting(&dashboard, &rover_id, "ready");
                 });
                 continue;
             }
@@ -3400,15 +3451,15 @@ async fn rover_loop(
                 dashboard_rover_error(
                     &dashboard,
                     rover_id,
-                    format!("source action claim error: {e:#}"),
+                    format!("source action accept error: {e:#}"),
                 );
-                errline!("[{rover_id}] source action claim error: {e:#}");
+                errline!("[{rover_id}] source action accept error: {e:#}");
                 sleep(Duration::from_secs(retry_seconds)).await;
                 continue;
             }
         }
 
-        match claim(&client, &hub, &token).await {
+        match accept_run(&client, &hub, &token).await {
             Ok(Some(run)) => {
                 let client = client.clone();
                 let hub = hub.clone();
@@ -3436,7 +3487,7 @@ async fn rover_loop(
                             &format!("guardrail blocked operation id: {}", run.operation_id),
                         )
                         .await;
-                        let _ = set_state(&client, &hub, &token, &run.id, "blocked").await;
+                        let _ = set_status(&client, &hub, &token, &run.id, "blocked").await;
                         drop(permit);
                         continue;
                     }
@@ -3478,7 +3529,7 @@ async fn rover_loop(
             }
             Ok(None) => {
                 drop(permit);
-                dashboard_rover_waiting(&dashboard, rover_id, "polling");
+                dashboard_rover_waiting(&dashboard, rover_id, "ready");
             }
             Err(e) if e.downcast_ref::<InvalidRoverToken>().is_some() => {
                 drop(permit);
@@ -3491,8 +3542,8 @@ async fn rover_loop(
             }
             Err(e) => {
                 drop(permit);
-                dashboard_rover_error(&dashboard, rover_id, format!("claim error: {e:#}"));
-                errline!("[{rover_id}] claim error: {e:#}");
+                dashboard_rover_error(&dashboard, rover_id, format!("accept error: {e:#}"));
+                errline!("[{rover_id}] accept error: {e:#}");
                 sleep(Duration::from_secs(retry_seconds)).await;
             }
         }
@@ -3619,7 +3670,7 @@ async fn fetch_run_assets(
     client: &Client,
     hub: &str,
     token: &str,
-    run: &ClaimedRun,
+    run: &AcceptedRun,
     operation_directory: &Path,
 ) -> Result<Vec<LocalRunAsset>> {
     if run.assets.is_empty() {
@@ -3772,7 +3823,7 @@ async fn upload_referenced_files(
     client: &Client,
     hub: &str,
     token: &str,
-    run: &ClaimedRun,
+    run: &AcceptedRun,
     operation_directory: &Path,
     local_assets: &[LocalRunAsset],
     message: &str,
@@ -3834,7 +3885,7 @@ async fn upload_generated_asset(
     client: &Client,
     hub: &str,
     token: &str,
-    run: &ClaimedRun,
+    run: &AcceptedRun,
     path: &Path,
 ) -> Result<String> {
     let meta = fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
@@ -3878,7 +3929,7 @@ async fn upload_generated_asset(
     let done = client
         .patch(hub_url(hub, format!("assets/{}", intent.asset_id)))
         .bearer_auth(token)
-        .json(&json!({ "state": "ready" }))
+        .json(&json!({ "status": "ready" }))
         .send()
         .await?;
     if !done.status().is_success() {
@@ -3894,7 +3945,7 @@ async fn run_one(
     client: &Client,
     hub: &str,
     token: &str,
-    run: &ClaimedRun,
+    run: &AcceptedRun,
     operation_directory: &Path,
     source_worktree: Option<&Path>,
     caps: PilotCaps,
@@ -3906,7 +3957,7 @@ async fn run_one(
     match ensure_work_directory(operation_directory, source_worktree).await {
         Ok(()) => {
             logline!(
-                "claimed run {} (operation {}) in {}",
+                "accepted run {} (operation {}) in {}",
                 &run.id,
                 run.operation_id,
                 operation_directory.display()
@@ -3932,7 +3983,7 @@ async fn run_one(
                     errline!("run {} errored: {e:#}", run.id);
                     let _ =
                         append_event(client, hub, token, &run.id, "error", &e.to_string()).await;
-                    let _ = set_state(client, hub, token, &run.id, "failed").await;
+                    let _ = set_status(client, hub, token, &run.id, "failed").await;
                 }
             }
         }
@@ -3953,7 +4004,7 @@ async fn run_one(
                 &format!("work tree failed: {e:#}"),
             )
             .await;
-            let _ = set_state(client, hub, token, &run.id, "failed").await;
+            let _ = set_status(client, hub, token, &run.id, "failed").await;
         }
     }
 }
@@ -4326,7 +4377,7 @@ async fn dirty_touched_source_paths(source: &Path, touched: &[PathBuf]) -> Resul
     Ok(dirty)
 }
 
-fn source_action_message(action: &ClaimedSourceAction) -> String {
+fn source_action_message(action: &AcceptedSourceAction) -> String {
     let title = first_line(action.operation_title.trim());
     if title.is_empty() {
         format!("UFO {}", action.operation_worktree_name)
@@ -4423,10 +4474,10 @@ impl std::fmt::Display for RunLeaseLost {
 
 impl std::error::Error for RunLeaseLost {}
 
-/// Claim the oldest queued run, if any.
-async fn claim(client: &Client, hub: &str, token: &str) -> Result<Option<ClaimedRun>> {
+/// Accept the oldest queued run, if any.
+async fn accept_run(client: &Client, hub: &str, token: &str) -> Result<Option<AcceptedRun>> {
     let resp = client
-        .post(hub_url(hub, "runs/claim"))
+        .post(hub_url(hub, "runs/accept"))
         .bearer_auth(token)
         .send()
         .await?;
@@ -4434,20 +4485,20 @@ async fn claim(client: &Client, hub: &str, token: &str) -> Result<Option<Claimed
     let status = resp.status();
     match status {
         StatusCode::NO_CONTENT => Ok(None),
-        StatusCode::OK => Ok(Some(resp.json::<ClaimedRun>().await?)),
+        StatusCode::OK => Ok(Some(resp.json::<AcceptedRun>().await?)),
         StatusCode::UNAUTHORIZED => Err(InvalidRoverToken.into()),
-        StatusCode::UPGRADE_REQUIRED => Err(hub_status_error("claim", resp).await),
-        s => Err(anyhow!("claim returned {s}")),
+        StatusCode::UPGRADE_REQUIRED => Err(hub_status_error("accept", resp).await),
+        s => Err(anyhow!("accept returned {s}")),
     }
 }
 
-async fn claim_source_action(
+async fn accept_source_action(
     client: &Client,
     hub: &str,
     token: &str,
-) -> Result<Option<ClaimedSourceAction>> {
+) -> Result<Option<AcceptedSourceAction>> {
     let resp = client
-        .post(hub_url(hub, "source-actions/claim"))
+        .post(hub_url(hub, "source-actions/accept"))
         .bearer_auth(token)
         .send()
         .await?;
@@ -4455,10 +4506,10 @@ async fn claim_source_action(
     let status = resp.status();
     match status {
         StatusCode::NO_CONTENT => Ok(None),
-        StatusCode::OK => Ok(Some(resp.json::<ClaimedSourceAction>().await?)),
+        StatusCode::OK => Ok(Some(resp.json::<AcceptedSourceAction>().await?)),
         StatusCode::UNAUTHORIZED => Err(InvalidRoverToken.into()),
-        StatusCode::UPGRADE_REQUIRED => Err(hub_status_error("source action claim", resp).await),
-        s => Err(anyhow!("source action claim returned {s}")),
+        StatusCode::UPGRADE_REQUIRED => Err(hub_status_error("source action accept", resp).await),
+        s => Err(anyhow!("source action accept returned {s}")),
     }
 }
 
@@ -4490,7 +4541,7 @@ fn response_error_message(status: StatusCode, body: &str) -> String {
         .unwrap_or_else(|| status.to_string())
 }
 
-fn web_enrollment_poll_error(status: StatusCode, message: &str) -> Option<&'static str> {
+fn web_enrollment_check_error(status: StatusCode, message: &str) -> Option<&'static str> {
     match (status, message) {
         (StatusCode::UNAUTHORIZED, "enrollment code expired") => {
             Some("web enrollment expired — run `ufo rover enroll` again")
@@ -4537,7 +4588,7 @@ struct Pilot {
     binary: &'static str,
     probe_args: &'static [&'static str],
     output: PilotOutput,
-    command: fn(&Path, &ClaimedRun, &str, &Path) -> Command,
+    command: fn(&Path, &AcceptedRun, &str, &Path) -> Command,
 }
 
 const PILOTS: &[Pilot] = &[
@@ -4681,7 +4732,7 @@ fn supported_pilots() -> String {
         .join(", ")
 }
 
-fn claude_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn claude_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("-p")
         .arg(prompt)
@@ -4697,7 +4748,7 @@ fn claude_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path)
     cmd
 }
 
-fn codex_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn codex_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if run.session_id.is_empty() {
         cmd.arg("exec")
@@ -4720,7 +4771,7 @@ fn codex_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) 
     cmd
 }
 
-fn opencode_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn opencode_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("run")
         .arg("--dangerously-skip-permissions")
@@ -4733,7 +4784,7 @@ fn opencode_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Pat
     cmd
 }
 
-fn openclaw_session_key(run: &ClaimedRun) -> String {
+fn openclaw_session_key(run: &AcceptedRun) -> String {
     if run.session_id.is_empty() {
         format!("ufo-{}", run.operation_id)
     } else {
@@ -4741,7 +4792,7 @@ fn openclaw_session_key(run: &ClaimedRun) -> String {
     }
 }
 
-fn openclaw_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn openclaw_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("agent")
         .arg("--session-key")
@@ -4754,7 +4805,7 @@ fn openclaw_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Pat
     cmd
 }
 
-fn antigravity_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn antigravity_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
         cmd.arg("--conversation").arg(&run.session_id);
@@ -4766,7 +4817,7 @@ fn antigravity_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &
     cmd
 }
 
-fn copilot_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn copilot_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
         cmd.arg("--session-id").arg(&run.session_id);
@@ -4779,7 +4830,7 @@ fn copilot_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path
     cmd
 }
 
-fn cursor_agent_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn cursor_agent_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("--print")
         .arg("--output-format")
@@ -4795,7 +4846,7 @@ fn cursor_agent_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: 
     cmd
 }
 
-fn amp_command(executable: &Path, _run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn amp_command(executable: &Path, _run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("--execute")
         .arg(prompt)
@@ -4804,7 +4855,7 @@ fn amp_command(executable: &Path, _run: &ClaimedRun, prompt: &str, cwd: &Path) -
     cmd
 }
 
-fn hermes_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn hermes_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
         cmd.arg("--resume").arg(&run.session_id);
@@ -4816,7 +4867,7 @@ fn hermes_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path)
     cmd
 }
 
-fn pi_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn pi_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
         cmd.arg("--session-id").arg(&run.session_id);
@@ -4829,7 +4880,7 @@ fn pi_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> 
     cmd
 }
 
-fn kimi_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn kimi_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
         cmd.arg("--session").arg(&run.session_id);
@@ -4844,7 +4895,7 @@ fn kimi_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -
     cmd
 }
 
-fn kiro_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn kiro_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("chat")
         .arg("--v3")
@@ -4861,7 +4912,7 @@ fn kiro_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -
     cmd
 }
 
-fn grok_command(executable: &Path, run: &ClaimedRun, prompt: &str, cwd: &Path) -> Command {
+fn grok_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
         cmd.arg("--resume").arg(&run.session_id);
@@ -4959,7 +5010,7 @@ async fn block_no_cli(
         &format!("{name} CLI not available on this rover"),
     )
     .await?;
-    set_state(client, hub, token, run_id, "blocked").await?;
+    set_status(client, hub, token, run_id, "blocked").await?;
     logline!("run {run_id} -> blocked (no {name})");
     Ok(())
 }
@@ -4998,7 +5049,7 @@ const NEEDS_INPUT_INSTRUCTION: &str = "If you cannot proceed without a decision 
 const WORK_DIRECTORY_INSTRUCTION: &str = "Work only in the current operation directory. If this is a project checkout, it is already an isolated git worktree; do not edit the rover's original source checkout.";
 // The pilot may set the operation's status by emitting @@UFO_STATUS:<status>@@.
 const STATUS_PREFIX: &str = "@@UFO_STATUS:";
-const STATUS_INSTRUCTION: &str = "By default, finishing leaves the operation In Review for a human. To set a different outcome, end your reply with a line containing exactly @@UFO_STATUS:<status>@@ where <status> is one of in_review, done, blocked, cancelled.";
+const STATUS_INSTRUCTION: &str = "By default, finishing leaves the operation In Review for a human. To set a different outcome, end your reply with a line containing exactly @@UFO_STATUS:<status>@@ where <status> is one of in_review, done, blocked, canceled.";
 
 // Explicit top-level operation creation protocol.
 const OPERATIONS_SENTINEL: &str = "@@UFO_OPERATIONS@@";
@@ -5067,7 +5118,7 @@ fn parse_status(msg: &str) -> Option<String> {
         .or_else(|| rest.find('\n'))
         .unwrap_or(rest.len());
     let status = rest[..end].trim().trim_end_matches('\r');
-    matches!(status, "in_review" | "done" | "blocked" | "cancelled").then(|| status.to_string())
+    matches!(status, "in_review" | "done" | "blocked" | "canceled").then(|| status.to_string())
 }
 
 /// Remove a @@UFO_STATUS:x@@ marker from the message the human sees.
@@ -5081,7 +5132,7 @@ fn strip_status(msg: &str) -> String {
         .or_else(|| rest.find('\n'))
         .unwrap_or(rest.len());
     let status = rest[..end].trim().trim_end_matches('\r');
-    if !matches!(status, "in_review" | "done" | "blocked" | "cancelled") {
+    if !matches!(status, "in_review" | "done" | "blocked" | "canceled") {
         return msg.to_string();
     }
     let marker_end =
@@ -5091,12 +5142,12 @@ fn strip_status(msg: &str) -> String {
         .to_string()
 }
 
-/// Run a claimed operation with its assigned pilot, then capture a diff.
+/// Run an accepted operation with its assigned pilot, then capture a diff.
 async fn execute_run(
     client: &Client,
     hub: &str,
     token: &str,
-    run: &ClaimedRun,
+    run: &AcceptedRun,
     operation_directory: &Path,
     caps: PilotCaps,
     dashboard: &Option<Dashboard>,
@@ -5147,7 +5198,7 @@ async fn execute_run(
             ),
         )
         .await?;
-        set_state(client, hub, token, &run.id, "blocked").await?;
+        set_status(client, hub, token, &run.id, "blocked").await?;
         return Ok(());
     };
     let Some(executable) = caps.path(pilot.kind) else {
@@ -5166,7 +5217,7 @@ async fn execute_run(
     .await?;
     let mut cmd = (pilot.command)(executable, run, &cli_prompt, operation_directory);
 
-    set_state_with_metadata(
+    set_status_with_metadata(
         client,
         hub,
         token,
@@ -5256,12 +5307,17 @@ async fn execute_run(
         let _ = append_event(client, hub, token, &run.id, "error", &message).await;
     }
 
-    // Record the session + post the pilot's final message as a comment.
+    let final_status = if status.success() {
+        "succeeded"
+    } else {
+        "failed"
+    };
     post_result(
         client,
         hub,
         token,
         &run.id,
+        final_status,
         &session,
         &message,
         needs_input,
@@ -5271,12 +5327,6 @@ async fn execute_run(
         sub_operations_feedback.as_ref(),
     )
     .await?;
-
-    let final_state = if status.success() {
-        "succeeded"
-    } else {
-        "failed"
-    };
     append_event(
         client,
         hub,
@@ -5286,8 +5336,7 @@ async fn execute_run(
         &format!("pilot exited with {:?}", status.code()),
     )
     .await?;
-    set_state(client, hub, token, &run.id, final_state).await?;
-    logline!("run {} -> {}", &run.id, final_state);
+    logline!("run {} -> {}", &run.id, final_status);
     Ok(())
 }
 
@@ -5295,7 +5344,7 @@ async fn execute_source_action(
     client: &Client,
     hub: &str,
     token: &str,
-    action: &ClaimedSourceAction,
+    action: &AcceptedSourceAction,
     operation_directory: &Path,
     source_worktree: Option<&Path>,
 ) {
@@ -5321,7 +5370,7 @@ async fn execute_source_action(
     let mut report = match result {
         Ok(report) => report,
         Err(e) => SourceActionReport {
-            state: "failed".to_string(),
+            status: "failed".to_string(),
             message: e.to_string(),
             ..SourceActionReport::default()
         },
@@ -5335,7 +5384,7 @@ async fn execute_source_action(
         hub,
         token,
         &action.id,
-        &report.state,
+        &report.status,
         &report.branch_name,
         &report.commit_sha,
         &report.base_sha,
@@ -5351,7 +5400,7 @@ async fn execute_source_action(
 
 #[derive(Default)]
 struct SourceActionReport {
-    state: String,
+    status: String,
     branch_name: String,
     commit_sha: String,
     base_sha: String,
@@ -5485,7 +5534,7 @@ async fn refresh_operation_from_source(
     let dirty = source_dirty_paths(source).await?;
     if !dirty.is_empty() {
         return Ok(SourceActionReport {
-            state: "conflicted".to_string(),
+            status: "conflicted".to_string(),
             base_sha,
             source_head_sha,
             message: format!(
@@ -5514,7 +5563,7 @@ async fn refresh_operation_from_source(
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         return Ok(SourceActionReport {
-            state: "conflicted".to_string(),
+            status: "conflicted".to_string(),
             base_sha,
             source_head_sha,
             message: format!("operation diff cannot refresh onto source HEAD cleanly: {e}"),
@@ -5528,7 +5577,7 @@ async fn refresh_operation_from_source(
         git_apply_bytes(operation, &["apply", "--binary", "--3way"], &patch).await?;
     }
     Ok(SourceActionReport {
-        state: "succeeded".to_string(),
+        status: "succeeded".to_string(),
         base_sha,
         source_head_sha,
         message: "refreshed operation worktree from the source checkout".to_string(),
@@ -5550,7 +5599,7 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
     let (patch, touched) = git_diff_binary_and_names(operation).await?;
     if patch.iter().all(|b| b.is_ascii_whitespace()) {
         return Ok(SourceActionReport {
-            state: "failed".to_string(),
+            status: "failed".to_string(),
             base_sha,
             source_head_sha,
             message: "operation worktree has no changes to apply".to_string(),
@@ -5560,7 +5609,7 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
     let dirty = dirty_touched_source_paths(source, &touched).await?;
     if !dirty.is_empty() {
         return Ok(SourceActionReport {
-            state: "conflicted".to_string(),
+            status: "conflicted".to_string(),
             base_sha,
             source_head_sha,
             message: format!(
@@ -5579,7 +5628,7 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
     .await
     {
         return Ok(SourceActionReport {
-            state: "conflicted".to_string(),
+            status: "conflicted".to_string(),
             base_sha,
             source_head_sha,
             message: format!("source checkout cannot apply patch cleanly: {e}"),
@@ -5590,7 +5639,7 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
         git_apply_bytes(source, &["apply", "--binary", "--3way", "--index"], &patch).await
     {
         return Ok(SourceActionReport {
-            state: "conflicted".to_string(),
+            status: "conflicted".to_string(),
             base_sha,
             source_head_sha,
             message: format!("source checkout apply failed: {e}"),
@@ -5598,7 +5647,7 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
         });
     }
     Ok(SourceActionReport {
-        state: "succeeded".to_string(),
+        status: "succeeded".to_string(),
         base_sha,
         source_head_sha,
         message: "applied operation worktree changes to the source checkout".to_string(),
@@ -5609,7 +5658,7 @@ async fn apply_operation_to_source(source: &Path, operation: &Path) -> Result<So
 async fn branch_operation_changes(
     source: &Path,
     operation: &Path,
-    action: &ClaimedSourceAction,
+    action: &AcceptedSourceAction,
 ) -> Result<SourceActionReport> {
     if !operation.join(".git").exists() {
         return Err(anyhow!("operation worktree is missing"));
@@ -5664,7 +5713,7 @@ async fn branch_operation_changes(
             git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
             let commit_sha = base_sha.clone();
             return Ok(SourceActionReport {
-                state: "succeeded".to_string(),
+                status: "succeeded".to_string(),
                 branch_name: action.branch_name.clone(),
                 commit_sha: commit_sha.clone(),
                 base_sha,
@@ -5678,7 +5727,7 @@ async fn branch_operation_changes(
             });
         }
         return Ok(SourceActionReport {
-            state: "failed".to_string(),
+            status: "failed".to_string(),
             branch_name: action.branch_name.clone(),
             base_sha,
             source_head_sha,
@@ -5691,7 +5740,7 @@ async fn branch_operation_changes(
     let commit_sha = git_head(operation).await?;
     git(operation, &["branch", &action.branch_name, "HEAD"]).await?;
     Ok(SourceActionReport {
-        state: "succeeded".to_string(),
+        status: "succeeded".to_string(),
         branch_name: action.branch_name.clone(),
         commit_sha: commit_sha.clone(),
         base_sha,
@@ -6196,6 +6245,7 @@ async fn post_result(
     hub: &str,
     token: &str,
     run_id: &str,
+    status: &str,
     session: &str,
     message: &str,
     needs_input: bool,
@@ -6204,7 +6254,13 @@ async fn post_result(
     sub_operations: Option<&serde_json::Value>,
     sub_operations_feedback: Option<&serde_json::Value>,
 ) -> Result<()> {
-    let mut body = json!({ "session_id": session, "message": message, "needs_input": needs_input, "operation_status": operation_status });
+    let mut body = json!({
+        "status": status,
+        "session_id": session,
+        "message": message,
+        "needs_input": needs_input,
+        "operation_status": operation_status,
+    });
     if let Some(s) = operations {
         body["operations"] = s.clone();
     }
@@ -6215,7 +6271,7 @@ async fn post_result(
         body["sub_operations_feedback"] = s.clone();
     }
     let resp = client
-        .put(hub_url(hub, format!("runs/{run_id}/result")))
+        .post(hub_url(hub, format!("runs/{run_id}/result")))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -6232,25 +6288,25 @@ async fn post_result(
     Ok(())
 }
 
-async fn set_state(
+async fn set_status(
     client: &Client,
     hub: &str,
     token: &str,
     run_id: &str,
-    state: &str,
+    status: &str,
 ) -> Result<()> {
-    set_state_with_metadata(client, hub, token, run_id, state, None).await
+    set_status_with_metadata(client, hub, token, run_id, status, None).await
 }
 
-async fn set_state_with_metadata(
+async fn set_status_with_metadata(
     client: &Client,
     hub: &str,
     token: &str,
     run_id: &str,
-    state: &str,
+    status: &str,
     metadata: Option<serde_json::Value>,
 ) -> Result<()> {
-    let mut body = json!({ "state": state });
+    let mut body = json!({ "status": status });
     if let Some(metadata) = metadata {
         body["metadata"] = metadata;
     }
@@ -6261,7 +6317,7 @@ async fn set_state_with_metadata(
         .send()
         .await?;
     if !resp.status().is_success() {
-        return Err(anyhow!("set_state {state} returned {}", resp.status()));
+        return Err(anyhow!("set_status {status} returned {}", resp.status()));
     }
     Ok(())
 }
@@ -6272,7 +6328,7 @@ async fn report_source_action(
     hub: &str,
     token: &str,
     action_id: &str,
-    state: &str,
+    status: &str,
     branch_name: &str,
     commit_sha: &str,
     base_sha: &str,
@@ -6281,7 +6337,7 @@ async fn report_source_action(
     metadata: Option<serde_json::Value>,
 ) -> Result<()> {
     let mut body = json!({
-        "state": state,
+        "status": status,
         "branch_name": branch_name,
         "commit_sha": commit_sha,
         "base_sha": base_sha,
@@ -6299,7 +6355,7 @@ async fn report_source_action(
         .await?;
     if !resp.status().is_success() {
         return Err(anyhow!(
-            "source action report {state} returned {}",
+            "source action report {status} returned {}",
             resp.status()
         ));
     }

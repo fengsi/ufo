@@ -84,7 +84,7 @@ func TestAssetUploadLifecycle(t *testing.T) {
 		t.Fatalf("upload target = %s %s", intent.Method, intent.URL)
 	}
 
-	if code, b := do(t, outsider, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"state": "ready"}); code != http.StatusForbidden {
+	if code, b := do(t, outsider, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"status": "ready"}); code != http.StatusForbidden {
 		t.Fatalf("outsider complete: %d %s", code, b)
 	}
 
@@ -105,7 +105,7 @@ func TestAssetUploadLifecycle(t *testing.T) {
 		t.Fatalf("upload bytes: %d", res.StatusCode)
 	}
 
-	code, b = do(t, owner, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"state": "ready"})
+	code, b = do(t, owner, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"status": "ready"})
 	if code != http.StatusOK {
 		t.Fatalf("complete upload: %d %s", code, b)
 	}
@@ -233,7 +233,7 @@ func TestAssetFileUploadStreamsPastJSONBodyLimit(t *testing.T) {
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("upload large content: %d", res.StatusCode)
 	}
-	code, b = do(t, owner, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"state": "ready"})
+	code, b = do(t, owner, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"status": "ready"})
 	if code != http.StatusOK {
 		t.Fatalf("complete large upload: %d %s", code, b)
 	}
@@ -462,12 +462,12 @@ func testServiceAccountJSON(t *testing.T, key *rsa.PrivateKey) string {
 	return string(b)
 }
 
-func TestClaimedRunIncludesAssetURLs(t *testing.T) {
+func TestAcceptedRunIncludesAssetURLs(t *testing.T) {
 	t.Setenv("UFO_HUB_ASSET_BACKEND", assetBackendLocal)
 	t.Setenv("UFO_HUB_ASSET_LOCAL_ROOT", t.TempDir())
 
 	ts := newTestServer(t)
-	owner := signup(t, ts, "asset-claim")
+	owner := signup(t, ts, "asset-accept")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Assets"})
 	fleetID := field(t, fb, "id")
 	assetID := uploadTextAsset(t, owner, ts.URL, fleetID, "trace.log", "hello pilot\n")
@@ -494,11 +494,11 @@ func TestClaimedRunIncludesAssetURLs(t *testing.T) {
 	operationID := field(t, b, "id")
 	contextAssetID := uploadTextAsset(t, owner, ts.URL, fleetID, "context.txt", "operation context\n", operationID)
 
-	code, b = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", connectionToken, nil)
+	code, b = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", connectionToken, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, b)
+		t.Fatalf("accept: %d %s", code, b)
 	}
-	var claim struct {
+	var accept struct {
 		ID     string `json:"id"`
 		Prompt string `json:"prompt"`
 		Assets []struct {
@@ -507,11 +507,11 @@ func TestClaimedRunIncludesAssetURLs(t *testing.T) {
 			URL      string `json:"url"`
 		} `json:"assets"`
 	}
-	if err := json.Unmarshal(b, &claim); err != nil {
-		t.Fatalf("decode claim: %v (%s)", err, b)
+	if err := json.Unmarshal(b, &accept); err != nil {
+		t.Fatalf("decode accept: %v (%s)", err, b)
 	}
-	if !strings.Contains(claim.Prompt, assetID) || len(claim.Assets) != 2 || claim.Assets[0].ID != assetID || claim.Assets[0].Filename != "trace.log" || claim.Assets[0].URL != "/v1/assets/"+assetID+"/file" || claim.Assets[1].ID != contextAssetID || claim.Assets[1].Filename != "context.txt" {
-		t.Fatalf("claim assets: %+v prompt=%q", claim.Assets, claim.Prompt)
+	if !strings.Contains(accept.Prompt, assetID) || len(accept.Assets) != 2 || accept.Assets[0].ID != assetID || accept.Assets[0].Filename != "trace.log" || accept.Assets[0].URL != "/v1/assets/"+assetID+"/file" || accept.Assets[1].ID != contextAssetID || accept.Assets[1].Filename != "context.txt" {
+		t.Fatalf("accept assets: %+v prompt=%q", accept.Assets, accept.Prompt)
 	}
 	code, b = do(t, &http.Client{}, "GET", ts.URL+"/v1/assets/"+assetID+"/file", connectionToken, nil)
 	if code != http.StatusOK || string(b) != "hello pilot\n" {
@@ -527,20 +527,17 @@ func TestClaimedRunIncludesAssetURLs(t *testing.T) {
 		t.Fatalf("rover read of unrelated asset: %d %s", code, b)
 	}
 
-	if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+claim.ID+"/result", connectionToken, map[string]any{
-		"message": "done", "session_id": "asset-session",
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+accept.ID+"/result", connectionToken, map[string]any{
+		"status": "succeeded", "message": "done", "session_id": "asset-session",
 	}); code != http.StatusNoContent {
 		t.Fatalf("run result: %d %s", code, b)
-	}
-	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+claim.ID, connectionToken, map[string]string{"state": "succeeded"}); code != http.StatusOK {
-		t.Fatalf("finish run: %d %s", code, b)
 	}
 	if code, b := postOperationComment(t, owner, ts.URL, operationID, "please inspect the same file"); code != http.StatusCreated {
 		t.Fatalf("comment: %d %s", code, b)
 	}
-	code, b = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", connectionToken, nil)
+	code, b = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", connectionToken, nil)
 	if code != http.StatusOK {
-		t.Fatalf("resume claim: %d %s", code, b)
+		t.Fatalf("resume accept: %d %s", code, b)
 	}
 	var resume struct {
 		Prompt string `json:"prompt"`
@@ -550,10 +547,10 @@ func TestClaimedRunIncludesAssetURLs(t *testing.T) {
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(b, &resume); err != nil {
-		t.Fatalf("decode resume claim: %v (%s)", err, b)
+		t.Fatalf("decode resume accept: %v (%s)", err, b)
 	}
 	if strings.Contains(resume.Prompt, assetID) || len(resume.Assets) != 2 || resume.Assets[0].ID != assetID || resume.Assets[0].URL != "/v1/assets/"+assetID+"/file" || resume.Assets[1].ID != contextAssetID {
-		t.Fatalf("resume claim assets: %+v prompt=%q", resume.Assets, resume.Prompt)
+		t.Fatalf("resume accept assets: %+v prompt=%q", resume.Assets, resume.Prompt)
 	}
 }
 
@@ -600,7 +597,7 @@ func TestResolveAndListOperationAssets(t *testing.T) {
 	assetC := uploadTextAsset(t, owner, ts.URL, fleetID, "c.txt", "c\n", operationID)
 	assetD := uploadTextAsset(t, owner, ts.URL, fleetID, "d.txt", "d\n", subOperationID)
 
-	code, b = do(t, owner, "GET", ts.URL+"/v1/operations/"+operationID+"/assets", "", nil)
+	code, b = do(t, owner, "GET", ts.URL+"/v1/assets?operation_id="+operationID, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("operation assets: %d %s", code, b)
 	}
@@ -659,7 +656,7 @@ func TestResolveAndListOperationAssets(t *testing.T) {
 	}
 }
 
-func TestRoverCanCreateAssetForClaimedRun(t *testing.T) {
+func TestRoverCanCreateAssetForAcceptedRun(t *testing.T) {
 	t.Setenv("UFO_HUB_ASSET_BACKEND", assetBackendLocal)
 	t.Setenv("UFO_HUB_ASSET_LOCAL_ROOT", t.TempDir())
 
@@ -680,14 +677,14 @@ func TestRoverCanCreateAssetForClaimedRun(t *testing.T) {
 		t.Fatalf("create operation: %d %s", code, b)
 	}
 	operationID := field(t, b, "id")
-	code, b = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", connectionToken, nil)
+	code, b = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", connectionToken, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, b)
+		t.Fatalf("accept: %d %s", code, b)
 	}
 	runID := field(t, b, "id")
 
 	assetID := uploadRoverTextAsset(t, connectionToken, ts.URL, runID, "report.txt", "generated\n")
-	code, b = do(t, owner, "GET", ts.URL+"/v1/operations/"+operationID+"/assets", "", nil)
+	code, b = do(t, owner, "GET", ts.URL+"/v1/assets?operation_id="+operationID, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("operation assets: %d %s", code, b)
 	}
@@ -765,7 +762,7 @@ func TestUserAssetContextUsesUserPath(t *testing.T) {
 
 	ts, srv := newTestServerWithNotifier(t)
 	owner := signup(t, ts, "asset-user-context")
-	_, me := do(t, owner, "GET", ts.URL+"/v1/me", "", nil)
+	_, me := do(t, owner, "GET", ts.URL+"/v1/users/me", "", nil)
 	userID := field(t, me, "id")
 
 	code, b := do(t, owner, "POST", ts.URL+"/v1/assets", "", map[string]any{
@@ -799,7 +796,7 @@ func TestUserAssetContextUsesUserPath(t *testing.T) {
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("upload user bytes: %d", res.StatusCode)
 	}
-	code, b = do(t, owner, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"state": "ready"})
+	code, b = do(t, owner, "PATCH", ts.URL+"/v1/assets/"+intent.AssetID, "", map[string]string{"status": "ready"})
 	if code != http.StatusOK {
 		t.Fatalf("complete user upload: %d %s", code, b)
 	}
@@ -867,7 +864,7 @@ func uploadTextAsset(t *testing.T, client *http.Client, baseURL, fleetID, filena
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("upload bytes: %d", res.StatusCode)
 	}
-	code, b = do(t, client, "PATCH", baseURL+"/v1/assets/"+intent.AssetID, "", map[string]string{"state": "ready"})
+	code, b = do(t, client, "PATCH", baseURL+"/v1/assets/"+intent.AssetID, "", map[string]string{"status": "ready"})
 	if code != http.StatusOK {
 		t.Fatalf("complete upload: %d %s", code, b)
 	}
@@ -907,7 +904,7 @@ func uploadRoverTextAsset(t *testing.T, token, baseURL, runID, filename, content
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("upload rover bytes: %d", res.StatusCode)
 	}
-	code, b = do(t, &http.Client{}, "PATCH", baseURL+"/v1/assets/"+intent.AssetID, token, map[string]string{"state": "ready"})
+	code, b = do(t, &http.Client{}, "PATCH", baseURL+"/v1/assets/"+intent.AssetID, token, map[string]string{"status": "ready"})
 	if code != http.StatusOK {
 		t.Fatalf("complete rover upload: %d %s", code, b)
 	}

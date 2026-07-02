@@ -64,7 +64,7 @@ case "$cmd" in
     ;;
   rover)
     # First run, code: UFO_ROVER_ENROLLMENT_CODE=<code> scripts/dev.sh rover enroll
-    # First run, web:  scripts/dev.sh rover enroll [--name NAME --units N --tag TAG]
+    # First run, web:  scripts/dev.sh rover enroll [--name NAME --units N --tags TAGS]
     #   (opens browser approval when possible, then starts after approval)
     # After enrolling, `scripts/dev.sh rover` runs all enrolled rovers concurrently.
     if [ "${1:-}" = "enroll" ]; then
@@ -80,7 +80,7 @@ case "$cmd" in
       done
       enroll_cmd="cargo run --manifest-path apps/rover/Cargo.toml -- rover enroll --hub $(quote_arg "$UFO_HUB_URL")"
       if [ -n "${UFO_ROVER_ENROLLMENT_CODE:-}" ]; then
-        enroll_cmd="$enroll_cmd --enrollment-code $(quote_arg "$UFO_ROVER_ENROLLMENT_CODE")"
+        enroll_cmd="$enroll_cmd --code $(quote_arg "$UFO_ROVER_ENROLLMENT_CODE")"
       fi
       eval "$enroll_cmd$enroll_args"
     else

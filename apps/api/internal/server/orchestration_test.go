@@ -35,17 +35,17 @@ func TestCaptainOrchestration(t *testing.T) {
 	})
 	op := field(t, ob, "id")
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverClaude, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverClaude, nil)
 	if code != http.StatusOK {
-		t.Fatalf("captain claim: %d %s", code, claim)
+		t.Fatalf("captain accept: %d %s", code, accept)
 	}
-	if !boolField(t, claim, "can_propose_sub_operations") {
-		t.Fatalf("expected can_propose_sub_operations=true on captain claim, got %s", claim)
+	if !boolField(t, accept, "can_propose_sub_operations") {
+		t.Fatalf("expected can_propose_sub_operations=true on captain accept, got %s", accept)
 	}
-	captainRun := field(t, claim, "id")
+	captainRun := field(t, accept, "id")
 
-	if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+captainRun+"/result", roverClaude, map[string]any{
-		"message": "planned", "sub_operations": []map[string]string{{"title": "A"}, {"title": "B"}},
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+captainRun+"/result", roverClaude, map[string]any{
+		"status": "succeeded", "message": "planned", "sub_operations": []map[string]string{{"title": "A"}, {"title": "B"}},
 	}); code != http.StatusNoContent {
 		t.Fatalf("captain result: %d %s", code, b)
 	}
@@ -68,34 +68,32 @@ func TestCaptainOrchestration(t *testing.T) {
 	if n := signalCount(t, owner, ts.URL, fq); n != 0 {
 		t.Fatalf("expected no human signals during orchestration, got %d", n)
 	}
-	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+captainRun, roverClaude, map[string]string{"state": "succeeded"})
-
-	for i, claimant := range []struct {
+	for i, acceptor := range []struct {
 		pilot string
 		token string
 	}{{"codex", roverCodex}, {"claude", roverClaude}} {
-		code, cl := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", claimant.token, nil)
+		code, cl := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", acceptor.token, nil)
 		if code != http.StatusOK {
-			t.Fatalf("claim sub-operation %d: %d %s", i, code, cl)
+			t.Fatalf("accept sub-operation %d: %d %s", i, code, cl)
 		}
-		if got := field(t, cl, "pilot"); got != claimant.pilot {
-			t.Fatalf("claim sub-operation %d pilot = %q, want %q", i, got, claimant.pilot)
+		if got := field(t, cl, "pilot"); got != acceptor.pilot {
+			t.Fatalf("accept sub-operation %d pilot = %q, want %q", i, got, acceptor.pilot)
 		}
 		if boolField(t, cl, "can_propose_sub_operations") {
-			t.Fatalf("sub-operation claim should not propose sub-operations: %s", cl)
+			t.Fatalf("sub-operation accept should not propose sub-operations: %s", cl)
 		}
 		if prompt := field(t, cl, "prompt"); !strings.Contains(prompt, "Main operation: "+op) {
 			t.Fatalf("sub-operation prompt missing main operation relationship: %q", prompt)
 		}
 		subOperationRun := field(t, cl, "id")
+		result := map[string]any{"status": "succeeded", "message": "done"}
 		if i == 0 {
-			if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+subOperationRun+"/result", claimant.token, map[string]any{
-				"message": "nested plan", "sub_operations": []map[string]string{{"title": "Nested"}},
-			}); code != http.StatusNoContent {
-				t.Fatalf("nested sub-operation result: %d %s", code, b)
-			}
+			result["message"] = "nested plan"
+			result["sub_operations"] = []map[string]string{{"title": "Nested"}}
 		}
-		do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+subOperationRun, claimant.token, map[string]string{"state": "succeeded"})
+		if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+subOperationRun+"/result", acceptor.token, result); code != http.StatusNoContent {
+			t.Fatalf("sub-operation result %d: %d %s", i, code, b)
+		}
 	}
 
 	orchestrating, status, runs, subOperations = operationSnapshot(t, owner, ts.URL, op, fq)
@@ -112,7 +110,7 @@ func TestCaptainOrchestration(t *testing.T) {
 	assertBoardHidesSubOperations(t, owner, ts.URL, fq)
 	reconcile := false
 	for _, r := range runs {
-		if r.State == "queued" && r.Pilot == "claude" {
+		if r.Status == "queued" && r.Pilot == "claude" {
 			reconcile = true
 		}
 	}
@@ -120,9 +118,9 @@ func TestCaptainOrchestration(t *testing.T) {
 		t.Fatalf("expected a queued captain reconcile run, got runs %+v", runs)
 	}
 
-	code, cl := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverClaude, nil)
+	code, cl := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverClaude, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim reconcile: %d %s", code, cl)
+		t.Fatalf("accept reconcile: %d %s", code, cl)
 	}
 	if prompt := field(t, cl, "prompt"); !strings.Contains(prompt, "Sub-operation:") || !strings.Contains(prompt, "Main operation: "+op) {
 		t.Fatalf("reconcile prompt missing operation relationship: %q", prompt)
@@ -139,14 +137,14 @@ func TestCaptainOrchestration(t *testing.T) {
 	if err := json.Unmarshal(subOperations[0], &firstSubOperation); err != nil {
 		t.Fatalf("decode first sub-operation: %v", err)
 	}
-	do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+reconcileRun+"/result", roverClaude, map[string]any{
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+reconcileRun+"/result", roverClaude, map[string]any{
+		"status":  "succeeded",
 		"message": "redo A",
 		"sub_operations_feedback": []map[string]string{{
 			"operation_id": firstSubOperation.ID,
 			"body":         "Please tighten A.",
 		}},
 	})
-	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+reconcileRun, roverClaude, map[string]string{"state": "succeeded"})
 
 	orchestrating, status, runs, subOperations = operationSnapshot(t, owner, ts.URL, op, fq)
 	if !orchestrating || status != "in_progress" {
@@ -156,29 +154,27 @@ func TestCaptainOrchestration(t *testing.T) {
 	if statuses[0] != "in_progress" || statuses[1] != "done" {
 		t.Fatalf("sub-operation statuses after feedback = %v, want [in_progress done]", statuses)
 	}
-	if got := activeRunState(t, subOperations[0]); got != "queued" {
-		t.Fatalf("expected redo run queued, got sub-operation active_run_state %q and main runs %+v", got, runs)
+	if got := activeRunStatus(t, subOperations[0]); got != "queued" {
+		t.Fatalf("expected redo run queued, got sub-operation active_run_status %q and main runs %+v", got, runs)
 	}
 	assertCommentAuthor(t, owner, ts.URL, firstSubOperation.ID, "Please tighten A.", "pilot", "claude")
 
-	code, cl = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverCodex, nil)
+	code, cl = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverCodex, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim redo: %d %s", code, cl)
+		t.Fatalf("accept redo: %d %s", code, cl)
 	}
 	redoRun := field(t, cl, "id")
 	if prompt := field(t, cl, "prompt"); !strings.Contains(prompt, "Please tighten A.") {
 		t.Fatalf("redo prompt missing captain feedback: %q", prompt)
 	}
-	do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+redoRun+"/result", roverCodex, map[string]any{"message": "A fixed"})
-	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+redoRun, roverCodex, map[string]string{"state": "succeeded"})
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+redoRun+"/result", roverCodex, map[string]any{"status": "succeeded", "message": "A fixed"})
 
-	code, cl = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverClaude, nil)
+	code, cl = do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverClaude, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim second reconcile: %d %s", code, cl)
+		t.Fatalf("accept second reconcile: %d %s", code, cl)
 	}
 	reconcileRun = field(t, cl, "id")
-	do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+reconcileRun+"/result", roverClaude, map[string]any{"operation_status": "done"})
-	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+reconcileRun, roverClaude, map[string]string{"state": "succeeded"})
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+reconcileRun+"/result", roverClaude, map[string]any{"status": "succeeded", "operation_status": "done"})
 
 	_, status, _, subOperations = operationSnapshot(t, owner, ts.URL, op, fq)
 	if status != "done" {
@@ -217,12 +213,13 @@ func TestPilotCanCreateTopLevelOperationFromConversation(t *testing.T) {
 	})
 	op := field(t, ob, "id")
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, claim)
+		t.Fatalf("accept: %d %s", code, accept)
 	}
-	run := field(t, claim, "id")
-	if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+run+"/result", rover, map[string]any{
+	run := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+run+"/result", rover, map[string]any{
+		"status":  "succeeded",
 		"message": "Created it.",
 		"operations": []map[string]string{{
 			"title": "Discuss repo memory",
@@ -260,7 +257,7 @@ func TestPilotCanCreateTopLevelOperationFromConversation(t *testing.T) {
 	_, _, createdRuns, _ := operationSnapshot(t, owner, ts.URL, newOp, fq)
 	queued := false
 	for _, r := range createdRuns {
-		if r.Pilot == "claude" && r.State == "queued" {
+		if r.Pilot == "claude" && r.Status == "queued" {
 			queued = true
 		}
 	}
@@ -273,7 +270,7 @@ func TestPilotCanCreateTopLevelOperationFromConversation(t *testing.T) {
 	}
 }
 
-func TestManualSubOperationClaimIncludesMainContext(t *testing.T) {
+func TestManualSubOperationAcceptIncludesMainContext(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "manual-sub-context")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "ManualSubContext"})
@@ -304,14 +301,14 @@ func TestManualSubOperationClaimIncludesMainContext(t *testing.T) {
 		t.Fatalf("sub-operation comment: %d %s", code, b)
 	}
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim sub-operation: %d %s", code, claim)
+		t.Fatalf("accept sub-operation: %d %s", code, accept)
 	}
-	if got := field(t, claim, "operation_id"); got != subOperation {
-		t.Fatalf("claimed operation = %q, want %q", got, subOperation)
+	if got := field(t, accept, "operation_id"); got != subOperation {
+		t.Fatalf("accepted operation = %q, want %q", got, subOperation)
 	}
-	prompt := field(t, claim, "prompt")
+	prompt := field(t, accept, "prompt")
 	for _, want := range []string{"Sub-operation", "Sub-operation context", "Main operation", "Main operation context", "Human: Main comment", "Human: Sub-operation comment"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
@@ -337,7 +334,7 @@ func signalCount(t *testing.T, c *http.Client, base, fq string) int {
 	return len(s)
 }
 
-func operationSnapshot(t *testing.T, c *http.Client, base, operationID, fq string) (bool, string, []struct{ Pilot, State string }, []json.RawMessage) {
+func operationSnapshot(t *testing.T, c *http.Client, base, operationID, fq string) (bool, string, []struct{ Pilot, Status string }, []json.RawMessage) {
 	t.Helper()
 	_, b := do(t, c, "GET", base+"/v1/operations/"+operationID, "", nil)
 	var d struct {
@@ -346,17 +343,17 @@ func operationSnapshot(t *testing.T, c *http.Client, base, operationID, fq strin
 			Orchestrating bool   `json:"orchestrating"`
 		} `json:"operation"`
 		Runs []struct {
-			Pilot string `json:"pilot"`
-			State string `json:"state"`
+			Pilot  string `json:"pilot"`
+			Status string `json:"status"`
 		} `json:"runs"`
 		SubOperations []json.RawMessage `json:"sub_operations"`
 	}
 	if err := json.Unmarshal(b, &d); err != nil {
 		t.Fatalf("decode operation detail: %v (%s)", err, b)
 	}
-	runs := make([]struct{ Pilot, State string }, len(d.Runs))
+	runs := make([]struct{ Pilot, Status string }, len(d.Runs))
 	for i, r := range d.Runs {
-		runs[i] = struct{ Pilot, State string }{r.Pilot, r.State}
+		runs[i] = struct{ Pilot, Status string }{r.Pilot, r.Status}
 	}
 	return d.Operation.Orchestrating, d.Operation.Status, runs, d.SubOperations
 }
@@ -376,15 +373,15 @@ func subOperationStatuses(t *testing.T, subOperations []json.RawMessage) []strin
 	return statuses
 }
 
-func activeRunState(t *testing.T, subOperation json.RawMessage) string {
+func activeRunStatus(t *testing.T, subOperation json.RawMessage) string {
 	t.Helper()
 	var op struct {
-		ActiveRunState string `json:"active_run_state"`
+		ActiveRunStatus string `json:"active_run_status"`
 	}
 	if err := json.Unmarshal(subOperation, &op); err != nil {
 		t.Fatalf("decode sub-operation: %v (%s)", err, subOperation)
 	}
-	return op.ActiveRunState
+	return op.ActiveRunStatus
 }
 
 func assertSubOperationStatuses(t *testing.T, subOperations []json.RawMessage, want string) {
@@ -414,7 +411,7 @@ func assertSubOperationPilots(t *testing.T, subOperations []json.RawMessage, wan
 
 func assertCommentAuthor(t *testing.T, c *http.Client, base, operationID, body, authorType, pilotKind string) {
 	t.Helper()
-	_, b := do(t, c, "GET", base+"/v1/operations/"+operationID+"/comments", "", nil)
+	_, b := do(t, c, "GET", base+"/v1/comments?operation_id="+operationID, "", nil)
 	var comments []struct {
 		Body            string  `json:"body"`
 		AuthorType      string  `json:"author_type"`
@@ -467,12 +464,14 @@ func assertBoardHidesSubOperations(t *testing.T, c *http.Client, base, fq string
 		t.Fatalf("main board sub-operation pilots = %v, want claude and codex", mainOperations[0].SubOperationProgress.PilotKinds)
 	}
 
-	_, body = do(t, c, "GET", testFleetFilteredURL(base, fq, "/operations/counts"), "", nil)
-	var counts map[string]int64
-	if err := json.Unmarshal(body, &counts); err != nil {
+	_, body = do(t, c, "GET", testFleetFilteredURL(base, fq, "/operations/stats?metrics=by_status"), "", nil)
+	var stats struct {
+		ByStatus map[string]int64 `json:"by_status"`
+	}
+	if err := json.Unmarshal(body, &stats); err != nil {
 		t.Fatalf("decode board counts: %v (%s)", err, body)
 	}
-	if counts["in_review"] != 0 {
-		t.Fatalf("board counts included in_review sub-operations: %v", counts)
+	if stats.ByStatus["in_review"] != 0 {
+		t.Fatalf("board counts included in_review sub-operations: %v", stats.ByStatus)
 	}
 }

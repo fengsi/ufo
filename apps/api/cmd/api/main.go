@@ -11,30 +11,31 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"ufo/apps/api/internal/database"
 	"ufo/apps/api/internal/migrate"
 	"ufo/apps/api/internal/server"
 )
 
 func main() {
-	databaseURL := env("UFO_HUB_DATABASE_URL", "postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable")
+	databaseURL := database.HubURL()
 	bind := env("UFO_HUB_BIND", ":8080")
 
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
-		log.Fatalf("connect postgres: %v", err)
+		log.Fatalf("connect PostgreSQL: %v", err)
 	}
 	defer pool.Close()
 
 	if err := waitForDB(ctx, pool); err != nil {
-		log.Fatalf("postgres not reachable: %v", err)
+		log.Fatalf("PostgreSQL not reachable: %v", err)
 	}
 
 	if err := migrate.Run(ctx, pool); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	log.Printf("migrations applied")
+	log.Printf("migrations applied (db %s)", database.Redacted(databaseURL))
 
 	// Long-poll notifier: LISTEN for run-queued notifications.
 	longPoll := time.Duration(envFloat("UFO_HUB_LONGPOLL_SECONDS", 25) * float64(time.Second))
@@ -43,7 +44,7 @@ func main() {
 
 	srv := server.New(pool, longPoll, notifier)
 	srv.StartWebsocketBroadcasts(ctx) // WebSocket broadcasts of typed change events
-	log.Printf("claim long-poll: %s", longPoll)
+	log.Printf("accept long-poll: %s", longPoll)
 
 	// Start the lease sweeper (requeues runs whose rover went silent).
 	leaseSeconds := envFloat("UFO_HUB_RUN_LEASE_SECONDS", 30)

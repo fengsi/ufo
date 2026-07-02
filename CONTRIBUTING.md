@@ -42,7 +42,7 @@ Run the checks for whatever you touched:
 (cd apps/rover && cargo fmt --check && cargo clippy -- -D warnings && cargo test && cargo build)
 
 # protocol (if you changed an endpoint)
-npx --yes @redocly/cli@2.35.1 lint apps/api/internal/spec/openapi.yaml
+npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
 ```
 
 CI runs these on every pull request.

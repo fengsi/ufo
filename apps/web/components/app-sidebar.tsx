@@ -35,7 +35,7 @@ export function AppSidebar({ section, setSection }: { section: Section; setSecti
   const toggle = () => setCollapsed((c) => { const n = !c; localStorage.setItem("ufo.sidebar", n ? "collapsed" : "open"); return n; });
 
   // Navigating closes the operation detail (it overlays the content column).
-  const go = (s: Section) => { app.openOperation(null); setSection(s); };
+  const go = (s: Section) => { app.openUser(null); app.openOperation(null); setSection(s); };
   return (
     <aside className={cn("ufo-sidebar shrink-0 overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out", collapsed ? "ufo-sidebar-collapsed w-14" : "w-56")}>
       <div className="flex h-full w-56 flex-col">

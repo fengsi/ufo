@@ -15,6 +15,7 @@ import { CrewsView } from "@/components/views/crews-view";
 import { RoversView } from "@/components/views/rovers-view";
 import { MembersView } from "@/components/views/members-view";
 import { SettingsView } from "@/components/views/settings-view";
+import { UserProfileView } from "@/components/user-profile";
 import { InviteBanner } from "@/components/invite-banner";
 import { Button } from "@/components/ui/button";
 import { appPath, parseAppPath, type Section } from "@/lib/routes";
@@ -57,7 +58,8 @@ export function AppShell() {
 
   useEffect(() => {
     const initialRoute = parseAppPath(window.location.pathname);
-    if (initialRoute.operationId) app.openOperation(initialRoute.operationId);
+    if (initialRoute.userId) app.openUser(initialRoute.userId);
+    else if (initialRoute.operationId) app.openOperation(initialRoute.operationId);
 
     const onPop = () => {
       const route = parseAppPath(window.location.pathname);
@@ -65,7 +67,11 @@ export function AppShell() {
         app.switchFleet(route.fleetId);
       }
       setSection(route.section);
-      app.openOperation(route.operationId);
+      if (route.userId) app.openUser(route.userId);
+      else {
+        app.openUser(null);
+        app.openOperation(route.operationId);
+      }
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -73,11 +79,11 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
-    const path = appPath(app.fleet, section, app.selectedOperation);
+    const path = appPath(app.fleet, section, app.selectedOperation, app.selectedUserId);
     const hash = window.location.hash.startsWith("#enroll=") ? window.location.hash : "";
     if (window.location.pathname !== path) window.history.replaceState(null, "", `${path}${hash}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, app.selectedOperation, app.fleet]);
+  }, [section, app.selectedOperation, app.selectedUserId, app.fleet]);
   const darkNow = resolvedTheme === "dark" || theme === "console-dark";
   const toggleTheme = () => {
     if (theme?.startsWith("console-")) {
@@ -92,7 +98,9 @@ export function AppShell() {
       <FireDefs />
       <AppSidebar section={section} setSection={setSection} />
       <div className="relative flex min-w-0 flex-1 flex-col">
-        {app.selectedOperation != null ? (
+        {app.selectedUserId != null ? (
+          <UserProfileView />
+        ) : app.selectedOperation != null ? (
           <OperationDetail />
         ) : (
           <>

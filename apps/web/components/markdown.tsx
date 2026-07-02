@@ -10,6 +10,7 @@ import { AssetPreview, AssetTextCopyButton } from "@/components/asset-preview";
 import { cn, hideFlowControlFlags } from "@/lib/utils";
 import { assetFilePath } from "@/lib/assets";
 import { appPath } from "@/lib/routes";
+import { linkUserMentions, userHrefID } from "@/lib/user-mentions";
 import type { Asset } from "@/lib/types";
 
 const OP_CODE_RE = /(^|[^\w`])#?([A-Za-z0-9]+-\d+)\b/g;
@@ -44,6 +45,21 @@ function renderEmojiNode(node: React.ReactNode): React.ReactNode {
     return React.cloneElement(node, undefined, renderEmojiNode(node.props.children));
   }
   return node;
+}
+
+/** Allow only http(s) and same-origin relative paths — blocks javascript:/data: etc. */
+function safeMarkdownHref(href?: string): string | null {
+  if (!href) return null;
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith("//")) return null;
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return trimmed;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "http:" || url.protocol === "https:") return trimmed;
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function operationHrefID(href?: string) {
@@ -164,7 +180,10 @@ export function Markdown({ children, className, assets = [] }: { children: strin
   useEffect(() => {
     if (previewAsset && !assets.some((asset) => asset.id === previewAsset.id)) setPreviewAsset(null);
   }, [assets, previewAsset]);
-  const linkedText = useMemo(() => linkOperationCodes(text, mentions), [text, mentions]);
+  const linkedText = useMemo(() => {
+    const withOps = linkOperationCodes(text, mentions);
+    return linkUserMentions(withOps, app.members, app.user, app.fleet);
+  }, [text, mentions, app.members, app.user, app.fleet]);
   return (
     <div
       className={cn(
@@ -185,13 +204,24 @@ export function Markdown({ children, className, assets = [] }: { children: strin
             const assetID = assetHrefID(href);
             const asset = assetID ? assets.find((asset) => asset.id === assetID) : null;
             if (asset) return <AssetLinkPreview asset={asset} onPreview={setPreviewAsset} />;
+            const safeHref = safeMarkdownHref(href);
+            if (!safeHref) {
+              return <span className="inline-flex items-center gap-0.5">{children}</span>;
+            }
+            const internal = safeHref.startsWith("/");
             return (
               <a
-                href={href}
-                target={href?.startsWith("/") ? undefined : "_blank"}
-                rel={href?.startsWith("/") ? undefined : "noopener noreferrer"}
+                href={safeHref}
+                target={internal ? undefined : "_blank"}
+                rel={internal ? undefined : "noopener noreferrer"}
                 onClick={(e) => {
-                  const id = operationHrefID(href);
+                  const userId = userHrefID(safeHref);
+                  if (userId) {
+                    e.preventDefault();
+                    app.openUser(userId);
+                    return;
+                  }
+                  const id = operationHrefID(safeHref);
                   if (!id) return;
                   e.preventDefault();
                   app.openOperation(id);
@@ -199,7 +229,7 @@ export function Markdown({ children, className, assets = [] }: { children: strin
                 className="inline-flex items-center gap-0.5"
               >
                 {children}
-                {!href?.startsWith("/") && <ExternalLink className="size-3 shrink-0 opacity-70" />}
+                {!internal && <ExternalLink className="size-3 shrink-0 opacity-70" />}
               </a>
             );
           },

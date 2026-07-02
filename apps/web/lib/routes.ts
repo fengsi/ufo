@@ -6,6 +6,7 @@ export type AppRoute = {
   fleetId: string | null;
   section: Section;
   operationId: string | null;
+  userId: string | null;
 };
 
 function isSection(value: string | undefined): value is Section {
@@ -17,12 +18,24 @@ export function parseAppPath(path: string): AppRoute {
   const hasFleetId = segments[0] === "fleets" && segments[1] != null;
   const fleetId = hasFleetId ? segments[1] : null;
   const sectionIndex = hasFleetId ? 2 : 0;
-  const section = isSection(segments[sectionIndex]) ? segments[sectionIndex] : "operations";
+  const head = segments[sectionIndex];
+
+  if (head === "users" && segments[sectionIndex + 1]) {
+    return {
+      fleetId,
+      section: "members",
+      operationId: null,
+      userId: segments[sectionIndex + 1],
+    };
+  }
+
+  const section = isSection(head) ? head : "operations";
   const operationId = section === "operations" ? (segments[sectionIndex + 1] ?? null) : null;
 
-  return { fleetId, section, operationId };
+  return { fleetId, section, operationId, userId: null };
 }
 
-export function appPath(fleetId: string, section: Section, operationId: string | null): string {
+export function appPath(fleetId: string, section: Section, operationId: string | null, userId: string | null = null): string {
+  if (userId != null) return `/fleets/${fleetId}/users/${userId}`;
   return operationId == null ? `/fleets/${fleetId}/${section}` : `/fleets/${fleetId}/operations/${operationId}`;
 }

@@ -1,5 +1,6 @@
 // Public ids are opaque strings; the API never exposes internal numeric ids.
 export type User = { id: string; email: string; name: string; created_at: string; updated_at: string };
+export type UserProfile = { id: string; name: string; fleets: Fleet[] };
 export type Fleet = { id: string; name: string; kind: string; metadata: Record<string, unknown>; created_at: string; updated_at: string };
 export type Member = { id: string; email: string; name: string; role: string; created_at: string; updated_at: string };
 export type Invitation = { id: string; invitee_email: string; role: string; status: string; created_at: string; updated_at: string; expires_at: string };
@@ -13,7 +14,7 @@ export type Label = { id: string; name: string; color: string; created_at: strin
 export type AssigneeType = "pilot" | "user" | "crew";
 export type RoutineTriggerType = "manual" | "schedule";
 export type RoutineMetadata = {
-  trigger?: { type?: RoutineTriggerType; cron?: string };
+  trigger?: { kind?: RoutineTriggerType; cron?: string };
   operation?: {
     start_immediately?: boolean;
     priority?: number;
@@ -40,6 +41,16 @@ export type Routine = {
   next_pulse_at: string | null;
   last_pulsed_at: string | null;
 };
+export type Pulse = {
+  id: string;
+  routine_id: string;
+  operation_id: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+};
 export type OperationReference = { id: string; title: string; status: string; sequence: number; mission_id: string };
 export type RelationKind = "blocks" | "blocked_by" | "relates" | "duplicate" | "duplicated_by";
 export type Relation = { id: string; kind: RelationKind; operation: OperationReference; created_by: string | null; created_at: string };
@@ -49,7 +60,7 @@ export type SourceAction = {
   run_id: string | null;
   rover_id: string | null;
   kind: "apply_to_source" | "create_source_branch" | "refresh_from_source";
-  state: "queued" | "claimed" | "succeeded" | "failed" | "conflicted";
+  status: "queued" | "accepted" | "succeeded" | "failed" | "conflicted";
   branch_name: string;
   commit_sha: string;
   base_sha: string;
@@ -59,17 +70,17 @@ export type SourceAction = {
   created_by: string | null;
   created_at: string;
   updated_at: string;
-  claimed_at: string | null;
+  accepted_at: string | null;
   finished_at: string | null;
 };
-export type PullRequest = { id: string; url: string; title: string; state: string; number?: number | null; metadata: Record<string, unknown>; created_by: string | null; created_at: string; updated_at: string };
+export type PullRequest = { id: string; url: string; title: string; status: string; number?: number | null; metadata: Record<string, unknown>; created_by: string | null; created_at: string; updated_at: string };
 export type SubOperationProgress = { total: number; done: number; in_progress: number; in_review: number; blocked: number; pilot_kinds: string[] };
 export type Operation = {
   id: string;
   title: string;
   body: string;
   status: string;
-  active_run_state: string;
+  active_run_status: string;
   mission_id: string;
   sequence: number;
   priority: number;
@@ -109,7 +120,7 @@ export type Run = {
   id: string;
   operation_id: string;
   pilot?: string;
-  state: string;
+  status: string;
   needs_input?: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -202,5 +213,5 @@ export const STATUS_TEXT: Record<string, string> = {
   in_review: "text-warning",
   done: "text-success",
   blocked: "text-destructive",
-  cancelled: "text-muted-foreground",
+  canceled: "text-muted-foreground",
 };

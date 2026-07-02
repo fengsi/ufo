@@ -39,7 +39,7 @@ func timePtr(t pgtype.Timestamptz) *time.Time {
 
 // ---- simple DTOs (own id only) ----
 
-type userDTO struct {
+type meDTO struct {
 	ID        string    `json:"id"`
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
@@ -47,8 +47,21 @@ type userDTO struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func toUserDTO(u db.User) userDTO {
-	return userDTO{ID: uuidStr(u.PublicID), Email: u.Email, Name: u.Name, CreatedAt: u.CreatedAt.Time, UpdatedAt: u.UpdatedAt.Time}
+func toMeDTO(u db.User) meDTO {
+	return meDTO{ID: uuidStr(u.PublicID), Email: u.Email, Name: u.Name, CreatedAt: u.CreatedAt.Time, UpdatedAt: u.UpdatedAt.Time}
+}
+
+type userProfileDTO struct {
+	ID     string     `json:"id"`
+	Name   string     `json:"name"`
+	Fleets []fleetDTO `json:"fleets"`
+}
+
+func toUserProfileDTO(u db.User, fleets []fleetDTO) userProfileDTO {
+	if fleets == nil {
+		fleets = []fleetDTO{}
+	}
+	return userProfileDTO{ID: uuidStr(u.PublicID), Name: u.Name, Fleets: fleets}
 }
 
 type fleetDTO struct {
@@ -198,7 +211,7 @@ type operationDTO struct {
 	Title                string               `json:"title"`
 	Body                 string               `json:"body"`
 	Status               string               `json:"status"`
-	ActiveRunState       string               `json:"active_run_state"`
+	ActiveRunStatus      string               `json:"active_run_status"`
 	MissionID            string               `json:"mission_id"`
 	Sequence             int32                `json:"sequence"`
 	Priority             int16                `json:"priority"`
@@ -236,6 +249,17 @@ type routineDTO struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 	NextPulseAt       *time.Time      `json:"next_pulse_at"`
 	LastPulsedAt      *time.Time      `json:"last_pulsed_at"`
+}
+
+type pulseDTO struct {
+	ID          string          `json:"id"`
+	RoutineID   string          `json:"routine_id"`
+	OperationID *string         `json:"operation_id"`
+	Status      string          `json:"status"`
+	Metadata    json.RawMessage `json:"metadata"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	FinishedAt  *time.Time      `json:"finished_at"`
 }
 
 type subOperationProgress struct {
@@ -333,7 +357,7 @@ type sourceActionDTO struct {
 	RunID         *string         `json:"run_id"`
 	RoverID       *string         `json:"rover_id"`
 	Kind          string          `json:"kind"`
-	State         string          `json:"state"`
+	Status        string          `json:"status"`
 	BranchName    string          `json:"branch_name"`
 	CommitSHA     string          `json:"commit_sha"`
 	BaseSHA       string          `json:"base_sha"`
@@ -343,7 +367,7 @@ type sourceActionDTO struct {
 	CreatedBy     *string         `json:"created_by"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
-	ClaimedAt     *time.Time      `json:"claimed_at"`
+	AcceptedAt    *time.Time      `json:"accepted_at"`
 	FinishedAt    *time.Time      `json:"finished_at"`
 }
 
@@ -369,11 +393,11 @@ func (s *Server) sourceActionDTOs(ctx context.Context, actions []db.SourceAction
 	for _, action := range actions {
 		d := sourceActionDTO{
 			ID: uuidStr(action.PublicID), OperationID: opMap[action.OperationID],
-			Kind: action.Kind, State: action.State, BranchName: action.BranchName,
+			Kind: action.Kind, Status: action.Status, BranchName: action.BranchName,
 			CommitSHA: action.CommitSha, BaseSHA: action.BaseSha, SourceHeadSHA: action.SourceHeadSha,
 			Message: action.Message, Metadata: metadataJSON(action.Metadata),
 			CreatedAt: action.CreatedAt.Time, UpdatedAt: action.UpdatedAt.Time,
-			ClaimedAt: timePtr(action.ClaimedAt), FinishedAt: timePtr(action.FinishedAt),
+			AcceptedAt: timePtr(action.AcceptedAt), FinishedAt: timePtr(action.FinishedAt),
 		}
 		if action.RunID.Valid {
 			d.RunID = strPtr(runMap[action.RunID.Int64])
@@ -412,7 +436,7 @@ type pullRequestDTO struct {
 	ID        string          `json:"id"`
 	URL       string          `json:"url"`
 	Title     string          `json:"title"`
-	State     string          `json:"state"`
+	Status    string          `json:"status"`
 	Number    *int32          `json:"number"`
 	Metadata  json.RawMessage `json:"metadata"`
 	CreatedBy *string         `json:"created_by"`
@@ -422,7 +446,7 @@ type pullRequestDTO struct {
 
 func (s *Server) pullRequestDTO(ctx context.Context, p db.PullRequest) pullRequestDTO {
 	d := pullRequestDTO{
-		ID: uuidStr(p.PublicID), URL: p.Url, Title: p.Title, State: p.State,
+		ID: uuidStr(p.PublicID), URL: p.Url, Title: p.Title, Status: p.Status,
 		Metadata: metadataJSON(p.Metadata), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
 	}
 	if p.Number.Valid {
@@ -467,7 +491,7 @@ type runDTO struct {
 	ID          string          `json:"id"`
 	OperationID string          `json:"operation_id"`
 	Pilot       string          `json:"pilot"`
-	State       string          `json:"state"`
+	Status      string          `json:"status"`
 	NeedsInput  bool            `json:"needs_input"`
 	Metadata    json.RawMessage `json:"metadata"`
 	CreatedAt   time.Time       `json:"created_at"`
@@ -614,6 +638,22 @@ func (s *Server) mapOperations(ctx context.Context, ids []int64) map[int64]strin
 	return out
 }
 
+func (s *Server) mapRoutines(ctx context.Context, ids []int64) map[int64]string {
+	out := map[int64]string{}
+	ids = dedupeIDs(ids)
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := s.q.PublicIDsForRoutines(ctx, ids)
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.ID] = uuidStr(r.PublicID)
+	}
+	return out
+}
+
 func (s *Server) mapRuns(ctx context.Context, ids []int64) map[int64]string {
 	out := map[int64]string{}
 	ids = dedupeIDs(ids)
@@ -694,11 +734,11 @@ func (s *Server) operationDTOs(ctx context.Context, ops []db.Operation) []operat
 	creatorMap := s.mapUsers(ctx, creatorIDs)
 	labelMap := s.labelsForOperations(ctx, opIDs)
 	subOperationProgressMap := s.subOperationProgress(ctx, opIDs)
-	activeRunStateMap := s.activeRunStates(ctx, opIDs)
+	activeRunStatusMap := s.activeRunStatuses(ctx, opIDs)
 	out := make([]operationDTO, 0, len(ops))
 	for _, o := range ops {
 		d := operationDTO{
-			ID: uuidStr(o.PublicID), Title: o.Title, Body: o.Body, Status: o.Status, ActiveRunState: activeRunStateMap[o.ID],
+			ID: uuidStr(o.PublicID), Title: o.Title, Body: o.Body, Status: o.Status, ActiveRunStatus: activeRunStatusMap[o.ID],
 			MissionID: mMap[o.MissionID], Sequence: o.Sequence, Priority: o.Priority, Orchestrating: o.Orchestrating, Archived: o.Archived,
 			RequiredTags: o.RequiredTags, ExcludedTags: o.ExcludedTags,
 			Labels: labelMap[o.ID], SubOperationProgress: subOperationProgressMap[o.ID],
@@ -775,18 +815,18 @@ func (s *Server) subOperationProgress(ctx context.Context, ids []int64) map[int6
 	return out
 }
 
-func (s *Server) activeRunStates(ctx context.Context, ids []int64) map[int64]string {
+func (s *Server) activeRunStatuses(ctx context.Context, ids []int64) map[int64]string {
 	out := map[int64]string{}
 	ids = dedupeIDs(ids)
 	if len(ids) == 0 {
 		return out
 	}
-	rows, err := s.q.ActiveRunStatesForOperations(ctx, ids)
+	rows, err := s.q.ActiveRunStatusesForOperations(ctx, ids)
 	if err != nil {
 		return out
 	}
 	for _, r := range rows {
-		out[r.OperationID] = r.State
+		out[r.OperationID] = r.Status
 	}
 	return out
 }
@@ -825,6 +865,31 @@ func (s *Server) routineDTOs(ctx context.Context, routines []db.Routine) []routi
 
 func (s *Server) routineDTO(ctx context.Context, r db.Routine) routineDTO {
 	return s.routineDTOs(ctx, []db.Routine{r})[0]
+}
+
+func (s *Server) pulseDTOs(ctx context.Context, pulses []db.Pulse) []pulseDTO {
+	var routineIDs, opIDs []int64
+	for _, p := range pulses {
+		routineIDs = append(routineIDs, p.RoutineID)
+		if p.OperationID.Valid {
+			opIDs = append(opIDs, p.OperationID.Int64)
+		}
+	}
+	routineMap := s.mapRoutines(ctx, routineIDs)
+	opMap := s.mapOperations(ctx, opIDs)
+	out := make([]pulseDTO, 0, len(pulses))
+	for _, p := range pulses {
+		d := pulseDTO{
+			ID: uuidStr(p.PublicID), RoutineID: routineMap[p.RoutineID],
+			Status: p.Status, Metadata: metadataJSON(p.Metadata),
+			CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time, FinishedAt: timePtr(p.FinishedAt),
+		}
+		if p.OperationID.Valid {
+			d.OperationID = strPtr(opMap[p.OperationID.Int64])
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 func (s *Server) commentDTOs(ctx context.Context, cs []db.Comment, userID int64) []commentDTO {
@@ -881,7 +946,7 @@ func (s *Server) runDTOs(ctx context.Context, rs []db.Run) []runDTO {
 	out := make([]runDTO, 0, len(rs))
 	for _, r := range rs {
 		out = append(out, runDTO{
-			ID: uuidStr(r.PublicID), OperationID: opMap[r.OperationID], State: r.State,
+			ID: uuidStr(r.PublicID), OperationID: opMap[r.OperationID], Status: r.Status,
 			Pilot: r.Pilot, NeedsInput: r.NeedsInput, Metadata: metadataJSON(r.Metadata),
 			CreatedAt: r.CreatedAt.Time, UpdatedAt: r.UpdatedAt.Time,
 		})

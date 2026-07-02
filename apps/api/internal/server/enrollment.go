@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"ufo/apps/api/internal/auth"
 	"ufo/apps/api/internal/db"
 )
 
@@ -37,18 +36,8 @@ func (s *Server) resolveUserForRequest(r *http.Request) (db.User, bool) {
 		}
 		return db.User{}, false
 	}
-	if c, err := r.Cookie(accessCookie); err == nil {
-		if user, err := s.userFromAccessToken(r.Context(), c.Value); err == nil {
-			return user, true
-		}
-		return db.User{}, false
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		if user, err := s.q.GetSessionUser(r.Context(), auth.HashToken(c.Value)); err == nil {
-			return user, true
-		}
-	}
-	return db.User{}, false
+	// No response writer here — skip clearing a bad access cookie.
+	return s.userFromCookies(nil, r, false)
 }
 
 func (s *Server) getRover(w http.ResponseWriter, r *http.Request) {

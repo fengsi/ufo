@@ -21,10 +21,10 @@ planned follow-up.
 
 ```bash
 # lint the spec
-npx --yes @redocly/cli@2.35.1 lint apps/api/internal/spec/openapi.yaml
+npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
 
 # preview docs locally
-npx --yes @redocly/cli@2.35.1 preview-docs apps/api/internal/spec/openapi.yaml
+npx --yes @redocly/cli@2.36.0 preview-docs apps/api/internal/spec/openapi.yaml
 ```
 
 ## Planned codegen (follow-up)

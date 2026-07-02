@@ -34,10 +34,15 @@ jobs:
         run: |
           go build ./...
           go vet ./...
+      - name: Create API test database
+        env:
+          PGPASSWORD: ufo
+        run: psql -h localhost -U ufo -d ufo -c "CREATE DATABASE ufo_test"
       - name: Test (incl. authz integration tests)
         working-directory: apps/api
         env:
-          UFO_HUB_TEST_DATABASE_URL: postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable
+          UFO_HUB_DATABASE_URL: postgres://ufo:ufo@localhost:5432/ufo?sslmode=disable
+          UFO_HUB_TEST_DATABASE_URL: postgres://ufo:ufo@localhost:5432/ufo_test?sslmode=disable
         run: go test ./...
 
   web:
@@ -152,7 +157,7 @@ jobs:
         with:
           node-version: "26"
       - name: Lint spec
-        run: npx --yes @redocly/cli@2.35.1 lint apps/api/internal/spec/openapi.yaml
+        run: npx --yes @redocly/cli@2.36.0 lint apps/api/internal/spec/openapi.yaml
 
   release-scripts:
     name: Release Scripts

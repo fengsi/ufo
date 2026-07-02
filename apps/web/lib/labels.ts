@@ -44,7 +44,7 @@ export function operationAssigneeValue(operation: Operation, user: { id: string 
 
 export function operationWaitingOnSubOperations(operation: Operation): boolean {
   const progress = operation.sub_operation_progress;
-  return operation.status === "in_progress" && operation.orchestrating && !operation.active_run_state && !!progress?.total && progress.done < progress.total;
+  return operation.status === "in_progress" && operation.orchestrating && !operation.active_run_status && !!progress?.total && progress.done < progress.total;
 }
 
 export function commentAuthor(c: Comment, user: Userish, members: Member[], _pilots: Pilot[]): string {

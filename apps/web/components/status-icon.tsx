@@ -40,7 +40,7 @@ export function StatusIcon({ status, className, subOperations = false }: { statu
           <path d="M4.8 4.8 L9.2 9.2 M9.2 4.8 L4.8 9.2" stroke="var(--background)" strokeWidth="1.4" strokeLinecap="round" />
         </>
       )}
-      {status === "cancelled" && (
+      {status === "canceled" && (
         <>
           <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
           <path d="M4.8 7 H9.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />

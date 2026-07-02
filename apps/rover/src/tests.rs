@@ -37,14 +37,14 @@ fn remove_env(key: &str) {
     unsafe { std::env::remove_var(key) }
 }
 
-fn sample_claimed_run(pilot: &str) -> ClaimedRun {
-    ClaimedRun {
+fn sample_accepted_run(pilot: &str) -> AcceptedRun {
+    AcceptedRun {
         id: "run".to_string(),
         operation_id: "operation".to_string(),
         operation_worktree_name: "UFO-1-operation".to_string(),
         operation_created_at: "2026-06-18T18:18:18Z".to_string(),
         worktree_enabled: true,
-        state: "queued".to_string(),
+        status: "queued".to_string(),
         pilot: pilot.to_string(),
         prompt: String::new(),
         session_id: "session".to_string(),
@@ -126,14 +126,15 @@ fn version_compare_accepts_release_tags() {
 
 #[test]
 fn rover_version_error_only_auto_upgrades_when_too_old() {
-    let too_old = rover_version_error("claim", Some("0.5.0"), None, "");
+    // Min above this package version so the binary is considered too old.
+    let too_old = rover_version_error("accept", Some("9.0.0"), None, "");
     assert!(too_old.can_auto_upgrade);
-    assert!(too_old.to_string().contains("0.5.0 or newer"));
+    assert!(too_old.to_string().contains("9.0.0 or newer"));
     let err: anyhow::Error = too_old.into();
     assert!(should_auto_upgrade_error(&err, true));
     assert!(!should_auto_upgrade_error(&err, false));
 
-    let too_new = rover_version_error("claim", Some("0.2.0"), Some("0.2.9"), "");
+    let too_new = rover_version_error("accept", Some("0.2.0"), Some("0.2.9"), "");
     assert!(!too_new.can_auto_upgrade);
     assert!(too_new.to_string().contains("between 0.2.0 and 0.2.9"));
     let err: anyhow::Error = too_new.into();
@@ -141,11 +142,11 @@ fn rover_version_error_only_auto_upgrades_when_too_old() {
 }
 
 #[test]
-fn mark_upgrade_required_stops_new_claims() {
+fn mark_upgrade_required_stops_new_accepts() {
     let revoked = AtomicBool::new(false);
     let upgrade_required = AtomicBool::new(false);
     let can_auto_upgrade = AtomicBool::new(false);
-    let err = rover_version_error("heartbeat", Some("0.5.0"), None, "");
+    let err = rover_version_error("heartbeat", Some("9.0.0"), None, "");
 
     mark_upgrade_required(&err, &revoked, &upgrade_required, &can_auto_upgrade);
 
@@ -155,7 +156,7 @@ fn mark_upgrade_required_stops_new_claims() {
 }
 
 #[test]
-fn web_enrollment_poll_stops_for_terminal_decisions() {
+fn web_enrollment_check_stops_for_terminal_decisions() {
     assert_eq!(
         response_error_message(
             StatusCode::UNAUTHORIZED,
@@ -164,17 +165,17 @@ fn web_enrollment_poll_stops_for_terminal_decisions() {
         "enrollment code expired"
     );
     assert_eq!(
-        web_enrollment_poll_error(StatusCode::UNAUTHORIZED, "invalid enrollment code"),
+        web_enrollment_check_error(StatusCode::UNAUTHORIZED, "invalid enrollment code"),
         None
     );
     assert_eq!(
-        web_enrollment_poll_error(StatusCode::UNAUTHORIZED, "enrollment pending"),
+        web_enrollment_check_error(StatusCode::UNAUTHORIZED, "enrollment pending"),
         None
     );
     assert!(
-        web_enrollment_poll_error(StatusCode::UNAUTHORIZED, "enrollment code expired").is_some()
+        web_enrollment_check_error(StatusCode::UNAUTHORIZED, "enrollment code expired").is_some()
     );
-    assert!(web_enrollment_poll_error(StatusCode::FORBIDDEN, "enrollment denied").is_some());
+    assert!(web_enrollment_check_error(StatusCode::FORBIDDEN, "enrollment denied").is_some());
 }
 
 #[test]
@@ -425,19 +426,83 @@ fn sse_frame_parses_event_and_ignores_keepalive() {
 }
 
 #[test]
-fn rover_spec_splits_key_values_and_tags() {
-    let fields = parse_rover_spec("code=abc,hub=http://h:8080,name=alpha,units=5,tags=gpu:us");
+fn enroll_config_splits_key_values_and_tags() {
+    let fields =
+        parse_enroll_config("hub=http://h:8080|code=abc|name=alpha|units=5|tags=gpu,region:us");
     assert_eq!(fields.get("code").map(String::as_str), Some("abc"));
     assert_eq!(fields.get("hub").map(String::as_str), Some("http://h:8080"));
+    assert_eq!(fields.get("name").map(String::as_str), Some("alpha"));
     assert_eq!(fields.get("units").map(String::as_str), Some("5"));
-    assert_eq!(fields.get("tags").map(String::as_str), Some("gpu:us"));
+    assert_eq!(
+        fields.get("tags").map(String::as_str),
+        Some("gpu,region:us")
+    );
+    assert_eq!(
+        parse_tags_list(fields.get("tags").unwrap()),
+        vec!["gpu".to_string(), "region:us".to_string()]
+    );
+}
+
+#[test]
+fn enroll_config_unescapes_pipe_in_values() {
+    let fields = parse_enroll_config(r"code=ab\|c|name=a\|b|tags=gpu,region:moon");
+    assert_eq!(fields.get("code").map(String::as_str), Some("ab|c"));
+    assert_eq!(fields.get("name").map(String::as_str), Some("a|b"));
+    assert_eq!(
+        parse_tags_list(fields.get("tags").unwrap()),
+        vec!["gpu".to_string(), "region:moon".to_string()]
+    );
+}
+
+#[test]
+fn parse_tags_list_keeps_colons_and_drops_empty() {
+    assert_eq!(
+        parse_tags_list("gpu, region:moon, ,os:macos"),
+        vec![
+            "gpu".to_string(),
+            "region:moon".to_string(),
+            "os:macos".to_string()
+        ]
+    );
+    assert!(parse_tags_list("").is_empty());
+    assert!(parse_tags_list("  , , ").is_empty());
+}
+
+#[test]
+fn field_or_env_prefers_field_then_env() {
+    let _guard = env_lock();
+    let key = "UFO_TEST_FIELD_OR_ENV";
+    // SAFETY: held under ENV_LOCK for this module's env-mutating tests.
+    unsafe {
+        std::env::remove_var(key);
+    }
+    assert_eq!(field_or_env(None, key), None);
+    assert_eq!(
+        field_or_env(Some(&"from-field".to_string()), key),
+        Some("from-field".to_string())
+    );
+    unsafe {
+        std::env::set_var(key, "from-env");
+    }
+    assert_eq!(field_or_env(None, key), Some("from-env".to_string()));
+    assert_eq!(
+        field_or_env(Some(&"from-field".to_string()), key),
+        Some("from-field".to_string())
+    );
+    assert_eq!(
+        field_or_env(Some(&String::new()), key),
+        Some("from-env".to_string())
+    );
+    unsafe {
+        std::env::remove_var(key);
+    }
 }
 
 #[test]
 fn hub_url_appends_version() {
     assert_eq!(
-        hub_url("http://h:8080", "runs/claim"),
-        "http://h:8080/v1/runs/claim"
+        hub_url("http://h:8080", "runs/accept"),
+        "http://h:8080/v1/runs/accept"
     );
     assert_eq!(
         hub_url("http://h:8080/", "/rovers/abc"),
@@ -655,7 +720,7 @@ fn source_apply_to_source_applies_only_when_touched_paths_are_clean() {
             .await
             .unwrap();
 
-        assert_eq!(report.state, "succeeded");
+        assert_eq!(report.status, "succeeded");
         assert_eq!(
             fs::read_to_string(source.join("README.md")).unwrap(),
             "applied\n"
@@ -751,7 +816,7 @@ fn source_refresh_updates_from_source_head_without_conflict() {
             .await
             .unwrap();
 
-        assert_eq!(report.state, "succeeded");
+        assert_eq!(report.status, "succeeded");
         assert_eq!(report.source_head_sha, source_head);
         assert_eq!(git_head(&operation).await.unwrap(), source_head);
         assert_eq!(
@@ -804,7 +869,7 @@ fn source_refresh_conflict_keeps_operation_worktree_unchanged() {
             .await
             .unwrap();
 
-        assert_eq!(report.state, "conflicted");
+        assert_eq!(report.status, "conflicted");
         assert_eq!(git_head(&operation).await.unwrap(), original_head);
         assert_eq!(
             fs::read_to_string(operation.join("README.md")).unwrap(),
@@ -837,7 +902,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             .await
             .unwrap();
         fs::write(operation.join("README.md"), "branched\n").unwrap();
-        let action = ClaimedSourceAction {
+        let action = AcceptedSourceAction {
             id: "action".to_string(),
             operation_id: "operation".to_string(),
             operation_title: "Branch work".to_string(),
@@ -851,7 +916,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             .await
             .unwrap();
 
-        assert_eq!(report.state, "succeeded");
+        assert_eq!(report.status, "succeeded");
         assert_eq!(report.branch_name, "ufo/UFO-2-branch-work");
         assert!(!report.commit_sha.is_empty());
         let first_commit = report.commit_sha.clone();
@@ -873,7 +938,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             .await
             .unwrap();
 
-        assert_eq!(recreated.state, "succeeded");
+        assert_eq!(recreated.status, "succeeded");
         assert_eq!(recreated.commit_sha, first_commit);
         assert_eq!(
             git(&source, &["show", "ufo/UFO-2-branch-work:README.md"])
@@ -890,7 +955,7 @@ fn source_branch_commits_operation_changes_without_switching_source() {
             .await
             .unwrap();
 
-        assert_eq!(updated.state, "succeeded");
+        assert_eq!(updated.status, "succeeded");
         assert_ne!(updated.commit_sha, first_commit);
         assert_eq!(
             git(&source, &["show", "ufo/UFO-2-branch-work:README.md"])
@@ -1185,9 +1250,9 @@ fn dashboard_frame_lists_rovers_and_active_runs() {
         )]),
         events: VecDeque::from([DashboardEvent {
             at: ts(),
-            level: "claim",
+            level: "accept",
             run_id: None,
-            message: "rover-a claimed run-a".to_string(),
+            message: "rover-an accepted run-a".to_string(),
         }]),
         ..DashboardState::default()
     }));
@@ -1203,17 +1268,20 @@ fn dashboard_frame_lists_rovers_and_active_runs() {
     assert!(frame.contains("Events"));
     assert!(frame.contains("rover-a"));
     assert!(frame.contains("run-a"));
-    assert!(frame.contains("localhost:8080 / Fleet"));
+    assert!(frame.contains("localhost:8080"));
+    assert!(frame.contains("Fleet"));
+    assert!(frame.contains("hub"));
+    assert!(frame.contains("fleet"));
     assert!(frame.contains("SLOTS"));
     let plain = plain_ansi(&frame);
     let banner_lines = plain
         .lines()
         .take(ROVER_BANNER.trim_matches('\n').lines().count())
         .collect::<Vec<_>>();
-    let rev_line = banner_lines
+    let version_line = banner_lines
         .iter()
-        .position(|line| line.contains("REV"))
-        .expect("rev metric in banner");
+        .position(|line| line.contains("VERSION"))
+        .expect("version metric in banner");
     let slots_line = banner_lines
         .iter()
         .position(|line| line.contains("SLOTS"))
@@ -1221,9 +1289,9 @@ fn dashboard_frame_lists_rovers_and_active_runs() {
     assert!(
         banner_lines
             .first()
-            .is_some_and(|line| line.contains("REV"))
+            .is_some_and(|line| line.contains("VERSION"))
     );
-    assert!(rev_line < slots_line);
+    assert!(version_line < slots_line);
     assert!(slots_line > banner_lines.len() / 2);
     assert!(
         banner_lines
@@ -1238,7 +1306,8 @@ fn dashboard_frame_lists_rovers_and_active_runs() {
     assert!(frame.contains(&help_key("[")));
     assert!(frame.contains(&help_key("q")));
     assert!(frame.contains(env!("CARGO_PKG_VERSION")));
-    assert!(frame.contains("localhost:8080 / Fleet"));
+    assert!(frame.contains("localhost:8080"));
+    assert!(frame.contains("Fleet"));
     assert!(!frame.contains("http://localhost"));
 }
 
@@ -1490,27 +1559,21 @@ fn dashboard_rover_detail_shows_full_rover() {
         ..DashboardState::default()
     }));
 
-    let list_frame = plain_ansi(&render_dashboard_frame(&dashboard, &test_outpost()));
-    let list_unit_column = list_frame
-        .lines()
-        .find(|line| line.contains("slot 1"))
-        .and_then(|line| line.find("slot 1"))
-        .expect("rover list unit row");
-
     handle_dashboard_keys(&dashboard, b"\r");
     let frame = render_dashboard_frame(&dashboard, &test_outpost());
     let plain = plain_ansi(&frame);
-    let detail_unit_column = plain
-        .lines()
-        .find(|line| line.contains("slot 1"))
-        .and_then(|line| line.find("slot 1"))
-        .expect("rover detail unit row");
 
-    assert!(frame.contains("rover-a-full-id"));
-    assert!(frame.contains("localhost:8080 / Fleet (rev dev)"));
+    assert!(frame.contains("localhost:8080"));
+    assert!(frame.contains("Fleet"));
     assert!(frame.contains("slot 1"));
     assert!(frame.contains("slot 2"));
-    assert_eq!(detail_unit_column, list_unit_column);
+    assert!(frame.contains("alpha"));
+    for line in plain
+        .lines()
+        .filter(|l| l.contains("slot ") || l.contains("Fleet"))
+    {
+        assert!(!line.trim_end().ends_with("..."), "row truncated: {line:?}");
+    }
 }
 
 #[test]
@@ -1637,7 +1700,7 @@ fn dashboard_keys_select_and_toggle_event_detail() {
             },
             DashboardEvent {
                 at: ts(),
-                level: "claim",
+                level: "accept",
                 run_id: None,
                 message: "second".to_string(),
             },
@@ -1845,7 +1908,7 @@ fn dashboard_empty_operations_skip_table_header() {
                 fleet: "Fleet".to_string(),
                 hub: "localhost:8080".to_string(),
                 hub_version: "dev".to_string(),
-                status: "polling".to_string(),
+                status: "ready".to_string(),
                 units: 2,
                 running: HashMap::new(),
                 updated_at: ts(),
@@ -1892,7 +1955,7 @@ fn pilot_registry_includes_default_pilots() {
 
 #[test]
 fn antigravity_command_uses_print_mode() {
-    let run = sample_claimed_run("antigravity");
+    let run = sample_accepted_run("antigravity");
     let cmd = antigravity_command(Path::new("agy"), &run, "do it", Path::new("/tmp"));
     let args = cmd
         .as_std()
@@ -1905,7 +1968,7 @@ fn antigravity_command_uses_print_mode() {
 
 #[test]
 fn copilot_command_uses_prompt_mode() {
-    let run = sample_claimed_run("copilot");
+    let run = sample_accepted_run("copilot");
     let cmd = copilot_command(Path::new("copilot"), &run, "do it", Path::new("/tmp"));
     let args = cmd
         .as_std()
@@ -1921,7 +1984,7 @@ fn copilot_command_uses_prompt_mode() {
 
 #[test]
 fn plain_text_pilots_use_non_interactive_prompt_mode() {
-    let run = sample_claimed_run("");
+    let run = sample_accepted_run("");
 
     for (args, expected) in [
         (

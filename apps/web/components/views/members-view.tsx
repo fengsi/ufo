@@ -32,11 +32,13 @@ export function MembersView() {
         <CardContent className="space-y-1">
           {app.members.map((m) => (
             <div key={m.id} className="flex items-center gap-3 py-2">
-              <Avatar className="size-7"><AvatarFallback>{initials(m.name || m.email)}</AvatarFallback></Avatar>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{m.name || m.email}{m.id === app.user.id && " (Current)"}</p>
-                <p className="truncate text-xs text-muted-foreground">{m.email}</p>
-              </div>
+              <button type="button" className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left" onClick={() => app.openUser(m.id)}>
+                <Avatar className="size-7"><AvatarFallback>{initials(m.name || m.email)}</AvatarFallback></Avatar>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium hover:underline">{m.name || m.email}{m.id === app.user.id && " (you)"}</p>
+                  <p className="truncate text-xs text-muted-foreground">{m.email}</p>
+                </div>
+              </button>
               {app.myRole === "owner" && m.id !== app.user.id ? (
                 <Select value={m.role} onValueChange={(v) => app.setMemberRole(m.id, v)}>
                   <SelectTrigger className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>

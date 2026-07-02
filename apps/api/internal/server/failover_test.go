@@ -48,17 +48,17 @@ func TestCrewFailover(t *testing.T) {
 	})
 	op := field(t, ob, "id")
 
-	claimFail := func(token string) {
-		code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", token, nil)
+	acceptFail := func(token string) {
+		code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", token, nil)
 		if code != http.StatusOK {
-			t.Fatalf("claim (%s): %d %s", token[:6], code, b)
+			t.Fatalf("accept (%s): %d %s", token[:6], code, b)
 		}
 		runID := field(t, b, "id")
-		if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, token, map[string]string{"state": "failed"}); code != http.StatusOK {
+		if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, token, map[string]string{"status": "failed"}); code != http.StatusOK {
 			t.Fatalf("fail run: %d %s", code, b)
 		}
 	}
-	claimFail(roverClaude)
+	acceptFail(roverClaude)
 
 	status, runs, comments := operationDetailSnapshot(t, owner, ts.URL, op, fq)
 	if status != "in_progress" {
@@ -71,7 +71,7 @@ func TestCrewFailover(t *testing.T) {
 		t.Fatalf("expected a Crew failover comment, got %q", comments)
 	}
 
-	claimFail(roverCodex)
+	acceptFail(roverCodex)
 	status, runs, _ = operationDetailSnapshot(t, owner, ts.URL, op, fq)
 	if status != "blocked" {
 		t.Fatalf("after both fail, operation status = %q, want blocked", status)
@@ -103,13 +103,12 @@ func TestNoFailoverOnPilotDeclaredBlock(t *testing.T) {
 	})
 	op := field(t, ob, "id")
 
-	code, cl := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, cl := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, cl)
+		t.Fatalf("accept: %d %s", code, cl)
 	}
 	runID := field(t, cl, "id")
-	do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"operation_status": "blocked"})
-	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, rover, map[string]string{"state": "succeeded"})
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded", "operation_status": "blocked"})
 
 	status, runs, comments := operationDetailSnapshot(t, owner, ts.URL, op, fq)
 	if status != "blocked" {

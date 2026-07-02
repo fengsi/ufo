@@ -31,12 +31,12 @@ const CARD_PROP_LABEL: Record<CardProp, string> = {
 const LIMIT = 50;
 const STATUS_LABEL: Record<string, string> = {
   backlog: "Backlog", todo: "Todo", in_progress: "In Progress",
-  in_review: "In Review", done: "Done", blocked: "Blocked", cancelled: "Cancelled",
+  in_review: "In Review", done: "Done", blocked: "Blocked", canceled: "Canceled",
 };
 // Column tints match each status's icon hue (STATUS_TEXT).
 const TINT: Record<string, string> = {
   backlog: "bg-muted/30", todo: "bg-muted/30", in_progress: "bg-info/5",
-  in_review: "bg-warning/5", done: "bg-success/5", blocked: "bg-destructive/5", cancelled: "bg-muted/20",
+  in_review: "bg-warning/5", done: "bg-success/5", blocked: "bg-destructive/5", canceled: "bg-muted/20",
 };
 
 type ColState = { items: Operation[]; cursor: string; done: boolean };
@@ -78,21 +78,22 @@ export function Board() {
 
   // (Re)load visible columns' first pages + counts + working pill on changes.
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
-      const c = await getJSON<Record<string, number>>(withFleet(`/api/v1/operations/counts?mission=${missionParam}${filterQS}`, app.fleet));
-      if (!cancelled && c) setCounts(c);
-      const wk = await getJSON<WorkCounts>(withFleet("/api/v1/operations/working", app.fleet));
-      if (!cancelled && wk) setWorkCounts({ ...EMPTY_WORK_COUNTS, ...wk });
+      const stats = await getJSON<{ by_status?: Record<string, number>; working?: WorkCounts }>(
+        withFleet(`/api/v1/operations/stats?metrics=by_status,working&mission=${missionParam}${filterQS}`, app.fleet),
+      );
+      if (!canceled && stats?.by_status) setCounts(stats.by_status);
+      if (!canceled && stats?.working) setWorkCounts({ ...EMPTY_WORK_COUNTS, ...stats.working });
       const entries = await Promise.all(
         visible.map(async (s) => {
           const items = await fetchColumn(s, "");
           return [s, { items, cursor: items.at(-1)?.id ?? "", done: items.length < LIMIT }] as const;
         }),
       );
-      if (!cancelled) setCols(Object.fromEntries(entries));
+      if (!canceled) setCols(Object.fromEntries(entries));
     })();
-    return () => { cancelled = true; };
+    return () => { canceled = true; };
   }, [app.fleet, app.boardTick, missionParam, visible, fetchColumn, filterQS]);
 
   const loadMore = useCallback(async (status: string) => {
@@ -453,8 +454,8 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
   const preview = op.body.split("\n").find((l) => l.trim()) ?? "";
   const show = (p: CardProp) => cardProps.has(p);
   const fire = onFire(op);
-  const queued = op.active_run_state === "queued";
-  const working = !!op.active_run_state && !queued;
+  const queued = op.active_run_status === "queued";
+  const working = !!op.active_run_status && !queued;
   const waitingOnSubOperations = operationWaitingOnSubOperations(op);
   return (
     <div
@@ -500,14 +501,27 @@ function CardBody({ op, cardProps = ALL_PROPS, dragging }: { op: Operation; card
       {show("subOperationProgress") && <SubOperationProgressStrip progress={op.sub_operation_progress} />}
       <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
         {show("assignee") && (op.assignee_type ? (
-          <div className="flex items-center gap-1.5">
-            <Avatar className="size-5">
-              <AvatarFallback className={cn("text-[9px]", pilotBacked && "bg-brand/15 text-brand")}>
-                {pilotKind ? <PilotIcon kind={pilotKind} size={12} /> : initials(name)}
-              </AvatarFallback>
-            </Avatar>
-            <span className="text-xs text-muted-foreground">{name}</span>
-          </div>
+          op.assignee_type === "user" && op.assignee_id ? (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-left hover:underline"
+              onClick={(e) => { e.stopPropagation(); app.openUser(op.assignee_id!); }}
+            >
+              <Avatar className="size-5">
+                <AvatarFallback className="text-[9px]">{initials(name)}</AvatarFallback>
+              </Avatar>
+              <span className="text-xs text-muted-foreground">{name}</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <Avatar className="size-5">
+                <AvatarFallback className={cn("text-[9px]", pilotBacked && "bg-brand/15 text-brand")}>
+                  {pilotKind ? <PilotIcon kind={pilotKind} size={12} /> : initials(name)}
+                </AvatarFallback>
+              </Avatar>
+              <span className="text-xs text-muted-foreground">{name}</span>
+            </div>
+          )
         ) : (
           <span className="text-xs text-muted-foreground/60">Unassigned</span>
         ))}

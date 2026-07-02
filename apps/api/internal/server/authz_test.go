@@ -1,8 +1,9 @@
 package server
 
 // Integration tests for the highest-risk authorization paths. They need a real
-// PostgreSQL: set UFO_HUB_TEST_DATABASE_URL (CI provides one). Without it they skip, so
-// `go test ./...` stays green on a machine with no database.
+// PostgreSQL instance: set UFO_HUB_TEST_DATABASE_URL (CI provides one; must not
+// be the runtime Hub database). Without it they skip, so `go test ./...` stays
+// green on a machine with no database.
 
 import (
 	"bytes"
@@ -16,7 +17,6 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	neturl "net/url"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ufo/apps/api/internal/auth"
+	"ufo/apps/api/internal/database"
 	"ufo/apps/api/internal/migrate"
 )
 
@@ -40,9 +41,12 @@ func webEnrollmentCodeForTest(t *testing.T) string {
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := os.Getenv("UFO_HUB_TEST_DATABASE_URL")
+	url := database.HubTestURL()
 	if url == "" {
 		t.Skip("set UFO_HUB_TEST_DATABASE_URL to run authz integration tests")
+	}
+	if err := database.EnsureDistinctTestURL(url); err != nil {
+		t.Fatal(err)
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, url)
@@ -64,7 +68,9 @@ func newTestServer(t *testing.T) *httptest.Server {
 
 func newTestServerWithNotifier(t *testing.T) (*httptest.Server, *Server) {
 	t.Helper()
-	url := os.Getenv("UFO_HUB_TEST_DATABASE_URL")
+	// Tests may run without a stable JWT key; allow ephemeral signing.
+	t.Setenv("UFO_HUB_JWT_ALLOW_EPHEMERAL", "1")
+	url := database.HubTestURL()
 	pool := newTestPool(t)
 	ctx := context.Background()
 	notifier := NewNotifier(url, "ufo_run_queued", "ufo_changed")
@@ -188,11 +194,46 @@ func testFleetMemberURL(base, fleet, path string) string {
 func TestUserCanRenameSelf(t *testing.T) {
 	ts := newTestServer(t)
 	client := signup(t, ts, "old-name")
-	if code, b := do(t, client, "PATCH", ts.URL+"/v1/me", "", map[string]string{"name": " New Name "}); code != http.StatusOK {
+	if code, b := do(t, client, "PATCH", ts.URL+"/v1/users/me", "", map[string]string{"name": " New Name "}); code != http.StatusOK {
 		t.Fatalf("rename self: %d %s", code, b)
 	}
-	if code, b := do(t, client, "GET", ts.URL+"/v1/me", "", nil); code != http.StatusOK || field(t, b, "name") != "New Name" {
-		t.Fatalf("me after rename: %d %s", code, b)
+	code, meB := do(t, client, "GET", ts.URL+"/v1/users/me", "", nil)
+	if code != http.StatusOK || field(t, meB, "name") != "New Name" {
+		t.Fatalf("me after rename: %d %s", code, meB)
+	}
+	meID := field(t, meB, "id")
+	if field(t, meB, "email") == "" {
+		t.Fatalf("me profile should include email: %s", meB)
+	}
+	code, pubB := do(t, client, "GET", ts.URL+"/v1/users/"+meID, "", nil)
+	if code != http.StatusOK || field(t, pubB, "name") != "New Name" || field(t, pubB, "id") != meID {
+		t.Fatalf("public self profile: %d %s", code, pubB)
+	}
+	if strings.Contains(string(pubB), "email") {
+		t.Fatalf("public profile must not include email: %s", pubB)
+	}
+}
+
+func TestGetUserSharedFleetOnly(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "profile-owner")
+	peer := signup(t, ts, "profile-peer")
+	stranger := signup(t, ts, "profile-stranger")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Shared"})
+	fq := field(t, fb, "id")
+	joinFleet(t, ts, owner, peer, fq, "member")
+
+	_, peerMe := do(t, peer, "GET", ts.URL+"/v1/users/me", "", nil)
+	peerID := field(t, peerMe, "id")
+	code, b := do(t, owner, "GET", ts.URL+"/v1/users/"+peerID, "", nil)
+	if code != http.StatusOK || field(t, b, "id") != peerID {
+		t.Fatalf("shared-fleet peer profile: %d %s", code, b)
+	}
+	if strings.Contains(string(b), "email") {
+		t.Fatalf("public peer profile must not include email: %s", b)
+	}
+	if code, b := do(t, stranger, "GET", ts.URL+"/v1/users/"+peerID, "", nil); code != http.StatusNotFound {
+		t.Fatalf("stranger profile = %d, want 404 (%s)", code, b)
 	}
 }
 
@@ -201,7 +242,7 @@ func TestAccessCookieAuthenticatesUser(t *testing.T) {
 	client := signup(t, ts, "access-cookie")
 	token := cookieValue(t, client, ts.URL, accessCookie)
 
-	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/me", nil)
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/users/me", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +260,7 @@ func TestAccessCookieAuthenticatesUser(t *testing.T) {
 
 func joinFleet(t *testing.T, ts *httptest.Server, owner, member *http.Client, fleet, role string) {
 	t.Helper()
-	_, mb := do(t, member, "GET", ts.URL+"/v1/me", "", nil)
+	_, mb := do(t, member, "GET", ts.URL+"/v1/users/me", "", nil)
 	email := field(t, mb, "email")
 	if code, b := do(t, owner, "POST", ts.URL+"/v1/invitations", "", map[string]string{"fleet_id": fleet, "email": email, "role": role}); code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("invite: %d %s", code, b)
@@ -230,7 +271,7 @@ func joinFleet(t *testing.T, ts *httptest.Server, owner, member *http.Client, fl
 		t.Fatalf("my invitations: %v %s", err, mineB)
 	}
 	invID, _ := mine[0]["id"].(string)
-	if code, b := do(t, member, "POST", ts.URL+"/v1/invitations/"+invID+"/accept", "", nil); code != http.StatusOK && code != http.StatusNoContent {
+	if code, b := do(t, member, "PATCH", ts.URL+"/v1/invitations/"+invID, "", map[string]string{"status": "accepted"}); code != http.StatusOK && code != http.StatusNoContent {
 		t.Fatalf("accept invite: %d %s", code, b)
 	}
 }
@@ -242,7 +283,7 @@ func TestSessionTokensAreHashed(t *testing.T) {
 	hash := auth.HashToken(token)
 
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv("UFO_HUB_TEST_DATABASE_URL"))
+	conn, err := pgx.Connect(ctx, database.HubTestURL())
 	if err != nil {
 		t.Fatalf("connect for session check: %v", err)
 	}
@@ -258,7 +299,7 @@ func TestSessionTokensAreHashed(t *testing.T) {
 	if hashRows != 1 || rawRows != 0 {
 		t.Fatalf("session token storage = hash rows %d, raw rows %d", hashRows, rawRows)
 	}
-	if code, b := do(t, client, "GET", ts.URL+"/v1/me", "", nil); code != http.StatusOK {
+	if code, b := do(t, client, "GET", ts.URL+"/v1/users/me", "", nil); code != http.StatusOK {
 		t.Fatalf("hashed session lookup failed: %d %s", code, b)
 	}
 }
@@ -273,7 +314,7 @@ func TestMemberMutationsReturnNotFoundForNonMember(t *testing.T) {
 		t.Fatalf("create fleet: %d %s", code, b)
 	}
 	fq := field(t, b, "id")
-	_, me := do(t, outsider, "GET", ts.URL+"/v1/me", "", nil)
+	_, me := do(t, outsider, "GET", ts.URL+"/v1/users/me", "", nil)
 	outsiderID := field(t, me, "id")
 
 	if code, b := do(t, owner, "PATCH", testFleetMemberURL(ts.URL, fq, "/members/"+outsiderID), "", map[string]string{"role": "member"}); code != http.StatusNotFound {
@@ -440,13 +481,13 @@ func TestConcurrentInvariants(t *testing.T) {
 
 	t.Run("at least one owner", func(t *testing.T) {
 		second := signup(t, ts, "concurrency-second")
-		_, secondMe := do(t, second, "GET", ts.URL+"/v1/me", "", nil)
+		_, secondMe := do(t, second, "GET", ts.URL+"/v1/users/me", "", nil)
 		secondID := field(t, secondMe, "id")
 		secondEmail := field(t, secondMe, "email")
-		_, ownerMe := do(t, owner, "GET", ts.URL+"/v1/me", "", nil)
+		_, ownerMe := do(t, owner, "GET", ts.URL+"/v1/users/me", "", nil)
 		ownerID := field(t, ownerMe, "id")
 		_, ib := do(t, owner, "POST", ts.URL+"/v1/invitations", "", map[string]string{"fleet_id": fq, "email": secondEmail, "role": "member"})
-		do(t, second, "POST", ts.URL+"/v1/invitations/"+field(t, ib, "id")+"/accept", "", nil)
+		do(t, second, "PATCH", ts.URL+"/v1/invitations/"+field(t, ib, "id"), "", map[string]string{"status": "accepted"})
 		if code, b := do(t, owner, "PATCH", testFleetMemberURL(ts.URL, fq, "/members/"+secondID), "", map[string]string{"role": "owner"}); code != http.StatusNoContent {
 			t.Fatalf("promote second owner: %d %s", code, b)
 		}
@@ -498,7 +539,7 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 	// A second user joins as a plain member via invite → accept.
 	member := signup(t, ts, "member")
 	var meEmail string
-	if _, mb := do(t, member, "GET", ts.URL+"/v1/me", "", nil); true {
+	if _, mb := do(t, member, "GET", ts.URL+"/v1/users/me", "", nil); true {
 		meEmail = field(t, mb, "email")
 	}
 	if code, b := do(t, owner, "POST", ts.URL+"/v1/invitations", "", map[string]string{"fleet_id": fq, "email": meEmail, "role": "member"}); code != http.StatusCreated && code != http.StatusOK {
@@ -510,7 +551,7 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 		t.Fatalf("my invitations: %v %s", err, mineB)
 	}
 	invID, _ := mine[0]["id"].(string)
-	if code, b := do(t, member, "POST", ts.URL+"/v1/invitations/"+invID+"/accept", "", nil); code != http.StatusOK && code != http.StatusNoContent {
+	if code, b := do(t, member, "PATCH", ts.URL+"/v1/invitations/"+invID, "", map[string]string{"status": "accepted"}); code != http.StatusOK && code != http.StatusNoContent {
 		t.Fatalf("accept invite: %d %s", code, b)
 	}
 
@@ -525,7 +566,7 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 		t.Fatalf("expected a full code at creation, got %q", fullCode)
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv("UFO_HUB_TEST_DATABASE_URL"))
+	conn, err := pgx.Connect(ctx, database.HubTestURL())
 	if err != nil {
 		t.Fatalf("connect for secret check: %v", err)
 	}
@@ -572,7 +613,7 @@ func TestOwnerOrAdminGatingAndTokenMasking(t *testing.T) {
 }
 
 // TestRoverRunOwnership covers finding #2: a rover may not mutate a run it did
-// not claim.
+// not accept.
 func TestRoverRunOwnership(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "owner")
@@ -606,60 +647,62 @@ func TestRoverRunOwnership(t *testing.T) {
 	}
 	operationID := field(t, ob, "id")
 
-	assertRunState := func(wantState string, wantQueued, wantWorking int64) {
+	assertRunStatus := func(wantStatus string, wantQueued, wantWorking int64) {
 		_, detailBody := do(t, owner, "GET", ts.URL+"/v1/operations/"+operationID, "", nil)
 		var detail struct {
 			Operation struct {
-				ActiveRunState string `json:"active_run_state"`
+				ActiveRunStatus string `json:"active_run_status"`
 			} `json:"operation"`
 		}
 		if err := json.Unmarshal(detailBody, &detail); err != nil {
 			t.Fatal(err)
 		}
-		if detail.Operation.ActiveRunState != wantState {
-			t.Fatalf("active_run_state = %q, want %q", detail.Operation.ActiveRunState, wantState)
+		if detail.Operation.ActiveRunStatus != wantStatus {
+			t.Fatalf("active_run_status = %q, want %q", detail.Operation.ActiveRunStatus, wantStatus)
 		}
-		_, countsBody := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/operations/working"), "", nil)
-		var counts struct {
-			Queued  int64 `json:"queued"`
-			Working int64 `json:"working"`
+		_, countsBody := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/operations/stats?metrics=working"), "", nil)
+		var stats struct {
+			Working struct {
+				Queued  int64 `json:"queued"`
+				Working int64 `json:"working"`
+			} `json:"working"`
 		}
-		if err := json.Unmarshal(countsBody, &counts); err != nil {
+		if err := json.Unmarshal(countsBody, &stats); err != nil {
 			t.Fatal(err)
 		}
-		if counts.Queued != wantQueued || counts.Working != wantWorking {
-			t.Fatalf("working counts = queued:%d working:%d, want queued:%d working:%d", counts.Queued, counts.Working, wantQueued, wantWorking)
+		if stats.Working.Queued != wantQueued || stats.Working.Working != wantWorking {
+			t.Fatalf("working counts = queued:%d working:%d, want queued:%d working:%d", stats.Working.Queued, stats.Working.Working, wantQueued, wantWorking)
 		}
 	}
-	assertRunState("queued", 1, 0)
+	assertRunStatus("queued", 1, 0)
 
-	// Rover B is otherwise tag-compatible, but it cannot claim a Claude run.
-	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverB, nil); code != http.StatusNoContent {
-		t.Fatalf("rover B claim = %d, want 204 (%s)", code, b)
+	// Rover B is otherwise tag-compatible, but it cannot accept a Claude run.
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverB, nil); code != http.StatusNoContent {
+		t.Fatalf("rover B accept = %d, want 204 (%s)", code, b)
 	}
 
-	// Rover A claims the run.
-	code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverA, nil)
+	// Rover A accepts the run.
+	code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverA, nil)
 	if code != http.StatusOK {
-		t.Fatalf("rover A claim: %d %s", code, cb)
+		t.Fatalf("rover A accept: %d %s", code, cb)
 	}
 	runID := field(t, cb, "id")
 	if runID == "" {
-		t.Fatalf("no run claimed: %s", cb)
+		t.Fatalf("no run accepted: %s", cb)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, field(t, cb, "operation_created_at")); err != nil {
 		t.Fatalf("operation_created_at missing or invalid: %v (%s)", err, cb)
 	}
 
-	// Rover B (did not claim) must not be able to change the run's state.
-	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, roverB, map[string]string{"state": "running"}); code != http.StatusNotFound {
+	// Rover B (did not accept) must not be able to change the run's state.
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, roverB, map[string]string{"status": "running"}); code != http.StatusNotFound {
 		t.Errorf("rover B set-state = %d, want 404 (%s)", code, b)
 	}
 	// Rover A (the owner of the run) can.
-	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, roverA, map[string]string{"state": "running"}); code != http.StatusOK && code != http.StatusNoContent {
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, roverA, map[string]string{"status": "running"}); code != http.StatusOK && code != http.StatusNoContent {
 		t.Errorf("rover A set-state = %d, want ok (%s)", code, b)
 	}
-	assertRunState("running", 0, 1)
+	assertRunStatus("running", 0, 1)
 
 }
 
@@ -697,8 +740,8 @@ func TestRoverListReportsRunningUnits(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{"fleet_id": fq, "title": fmt.Sprintf("t%d", i), "mission_id": mission, "assignee_type": "pilot", "assignee_id": "claude"})
-		if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil); code != http.StatusOK {
-			t.Fatalf("claim %d: %d %s", i, code, b)
+		if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusOK {
+			t.Fatalf("accept %d: %d %s", i, code, b)
 		}
 		if i == 0 {
 			if usage := readUsage(); usage.Status != "online" || usage.Units != 2 || usage.RunningUnits != 1 {
@@ -734,19 +777,22 @@ func TestCancelRunStopsHeartbeat(t *testing.T) {
 		t.Fatalf("create operation: %d %s", code, b)
 	}
 
-	code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, cb)
+		t.Fatalf("accept: %d %s", code, cb)
 	}
 	runID := field(t, cb, "id")
 
-	if code, b := do(t, owner, "POST", ts.URL+"/v1/runs/"+runID+"/cancel", "", nil); code != http.StatusOK {
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/runs/"+runID, "", map[string]string{"status": "succeeded"}); code != http.StatusBadRequest {
+		t.Fatalf("user run status update = %d, want 400 (%s)", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/runs/"+runID, "", map[string]string{"status": "canceled"}); code != http.StatusOK {
 		t.Fatalf("cancel: %d %s", code, b)
 	}
 	if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+runID+"/heartbeat", rover, nil); code != http.StatusNotFound {
 		t.Fatalf("heartbeat after cancel = %d, want 404 (%s)", code, b)
 	}
-	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, rover, map[string]string{"state": "succeeded"}); code != http.StatusNotFound {
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, rover, map[string]string{"status": "succeeded"}); code != http.StatusNotFound {
 		t.Fatalf("state after cancel = %d, want 404 (%s)", code, b)
 	}
 
@@ -756,8 +802,8 @@ func TestCancelRunStopsHeartbeat(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"operation"`
 		Runs []struct {
-			ID    string `json:"id"`
-			State string `json:"state"`
+			ID     string `json:"id"`
+			Status string `json:"status"`
 		} `json:"runs"`
 	}
 	if err := json.Unmarshal(detail, &got); err != nil {
@@ -767,8 +813,8 @@ func TestCancelRunStopsHeartbeat(t *testing.T) {
 		t.Fatalf("operation status after cancel = %q, want in_review", got.Operation.Status)
 	}
 	for _, run := range got.Runs {
-		if run.ID == runID && run.State != "canceled" {
-			t.Fatalf("run state after cancel = %q, want canceled", run.State)
+		if run.ID == runID && run.Status != "canceled" {
+			t.Fatalf("run status after cancel = %q, want canceled", run.Status)
 		}
 	}
 }
@@ -789,15 +835,15 @@ func TestCancelRunPreservesPendingFollowUp(t *testing.T) {
 	})
 	operation := field(t, ob, "id")
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, claim)
+		t.Fatalf("accept: %d %s", code, accept)
 	}
-	runID := field(t, claim, "id")
+	runID := field(t, accept, "id")
 	if code, b := postOperationComment(t, owner, ts.URL, operation, "please continue"); code != http.StatusCreated {
 		t.Fatalf("queued comment: %d %s", code, b)
 	}
-	if code, b := do(t, owner, "POST", ts.URL+"/v1/runs/"+runID+"/cancel", "", nil); code != http.StatusOK {
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/runs/"+runID, "", map[string]string{"status": "canceled"}); code != http.StatusOK {
 		t.Fatalf("cancel active run: %d %s", code, b)
 	}
 
@@ -807,8 +853,8 @@ func TestCancelRunPreservesPendingFollowUp(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"operation"`
 		Runs []struct {
-			ID    string `json:"id"`
-			State string `json:"state"`
+			ID     string `json:"id"`
+			Status string `json:"status"`
 		} `json:"runs"`
 	}
 	if err := json.Unmarshal(detail, &got); err != nil {
@@ -819,22 +865,22 @@ func TestCancelRunPreservesPendingFollowUp(t *testing.T) {
 	}
 	queuedRun := ""
 	for _, run := range got.Runs {
-		if run.ID == runID && run.State != "canceled" {
-			t.Fatalf("canceled run state = %q, want canceled", run.State)
+		if run.ID == runID && run.Status != "canceled" {
+			t.Fatalf("canceled run status = %q, want canceled", run.Status)
 		}
-		if run.State == "queued" {
+		if run.Status == "queued" {
 			queuedRun = run.ID
 		}
 	}
 	if queuedRun == "" {
 		t.Fatalf("runs after cancel = %+v, want queued follow-up", got.Runs)
 	}
-	if code, b := do(t, owner, "POST", ts.URL+"/v1/runs/"+queuedRun+"/cancel", "", nil); code != http.StatusConflict {
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/runs/"+queuedRun, "", map[string]string{"status": "canceled"}); code != http.StatusConflict {
 		t.Fatalf("cancel queued follow-up = %d, want 409 (%s)", code, b)
 	}
-	code, next := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, next := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim follow-up: %d %s", code, next)
+		t.Fatalf("accept follow-up: %d %s", code, next)
 	}
 	if prompt := field(t, next, "prompt"); !strings.Contains(prompt, "please continue") {
 		t.Fatalf("follow-up prompt missing queued comment: %s", prompt)
@@ -993,7 +1039,7 @@ func TestRoverTagRefreshNotifiesFleet(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(ctx, os.Getenv("UFO_HUB_TEST_DATABASE_URL"))
+	conn, err := pgx.Connect(ctx, database.HubTestURL())
 	if err != nil {
 		t.Fatalf("listen connect: %v", err)
 	}
@@ -1028,7 +1074,7 @@ func TestTenantIsolation(t *testing.T) {
 	outsider := signup(t, ts, "outsider")
 
 	// outsider's public id (they are NOT a member of the owner's group fleet).
-	_, ob := do(t, outsider, "GET", ts.URL+"/v1/me", "", nil)
+	_, ob := do(t, outsider, "GET", ts.URL+"/v1/users/me", "", nil)
 	outsiderID := field(t, ob, "id")
 
 	code, b := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Acme"})
@@ -1100,6 +1146,26 @@ func TestCreateOperationValidation(t *testing.T) {
 	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+moveOperation, "", map[string]any{"main_operation_id": subOperation}); code != http.StatusBadRequest {
 		t.Fatalf("patch nested sub-operation = %d, want 400 (%s)", code, b)
 	}
+
+	_, missionB := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "Andromeda", "key": "AND"})
+	mission2 := field(t, missionB, "id")
+	_, switchBody := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{"fleet_id": fq, "title": "switch mission", "mission_id": mission})
+	switchOperation := field(t, switchBody, "id")
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+switchOperation, "", map[string]any{"mission_id": mission2}); code != http.StatusOK {
+		t.Fatalf("patch operation mission = %d, want 200 (%s)", code, b)
+	} else if field(t, b, "mission_id") != mission2 {
+		t.Fatalf("patched mission_id = %s, want %s", field(t, b, "mission_id"), mission2)
+	}
+	if code, b := do(t, owner, "GET", ts.URL+"/v1/operations/"+switchOperation, "", nil); code != http.StatusOK {
+		t.Fatalf("get operation after mission change = %d (%s)", code, b)
+	} else if !strings.Contains(string(b), "Moved from mission") || !strings.Contains(string(b), "Pilot session cleared") {
+		t.Fatalf("expected system mission-change comment in detail: %s", b)
+	} else if !strings.Contains(string(b), `"mission_move"`) || !strings.Contains(string(b), `"from_key"`) {
+		t.Fatalf("expected mission_move metadata in detail: %s", b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/operations/"+subOperation, "", map[string]any{"mission_id": mission2}); code != http.StatusBadRequest {
+		t.Fatalf("patch sub-operation mission = %d, want 400 (%s)", code, b)
+	}
 }
 
 func TestOperationCodeSearchIsFleetScoped(t *testing.T) {
@@ -1117,13 +1183,13 @@ func TestOperationCodeSearchIsFleetScoped(t *testing.T) {
 	fleetA := create("A", "from A")
 	fleetB := create("B", "from B")
 
-	code, b := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fleetA, "/operations/search?q="), "", nil)
+	code, b := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fleetA, "/operations?q="), "", nil)
 	if code != http.StatusOK || string(b) != "[]\n" {
 		t.Fatalf("empty search = %d %s, want []", code, b)
 	}
 
 	searchTitle := func(fleet string) string {
-		code, b := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fleet, "/operations/search?q="+neturl.QueryEscape("UFO")), "", nil)
+		code, b := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fleet, "/operations?q="+neturl.QueryEscape("UFO")), "", nil)
 		if code != http.StatusOK {
 			t.Fatalf("search: %d %s", code, b)
 		}
@@ -1181,7 +1247,7 @@ func TestOperationDetailCommentsArePaged(t *testing.T) {
 		Comments     []commentRow `json:"comments"`
 		CommentsMore bool         `json:"comments_more"`
 	}
-	code, b = do(t, owner, "GET", ts.URL+"/v1/operations/"+operation+"/comments?before="+detail.Comments[0].ID+"&limit=30", "", nil)
+	code, b = do(t, owner, "GET", ts.URL+"/v1/comments?operation_id="+operation+"&before="+detail.Comments[0].ID+"&limit=30", "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("comments page: %d %s", code, b)
 	}
@@ -1208,17 +1274,16 @@ func TestHumanContinuationDoneStopsInReview(t *testing.T) {
 	operation := field(t, ob, "id")
 
 	finish := func(operationStatus, want string) {
-		code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+		code, cb := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 		if code != http.StatusOK {
-			t.Fatalf("claim: %d %s", code, cb)
+			t.Fatalf("accept: %d %s", code, cb)
 		}
 		runID := field(t, cb, "id")
-		result := map[string]any{"message": "done", "session_id": "s1"}
+		result := map[string]any{"status": "succeeded", "message": "done", "session_id": "s1"}
 		if operationStatus != "" {
 			result["operation_status"] = operationStatus
 		}
-		do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+runID+"/result", rover, result)
-		do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, rover, map[string]string{"state": "succeeded"})
+		do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, result)
 		_, detail := do(t, owner, "GET", ts.URL+"/v1/operations/"+operation, "", nil)
 		var got struct {
 			Operation struct {
@@ -1244,6 +1309,94 @@ func TestHumanContinuationDoneStopsInReview(t *testing.T) {
 	finish("done", "done")
 }
 
+func TestFinalizedRunDoesNotLeaseRequeue(t *testing.T) {
+	ts, srv := newTestServerWithNotifier(t)
+	owner := signup(t, ts, "finalized-run")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Finalized"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{"fleet_id": fq, "title": "t", "mission_id": field(t, mb, "id"), "assignee_type": "pilot", "assignee_id": "claude"})
+	operation := field(t, ob, "id")
+
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded", "message": "done"}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+
+	pid, ok := parseUUID(runID)
+	if !ok {
+		t.Fatalf("invalid run id %q", runID)
+	}
+	ctx := context.Background()
+	run, err := srv.q.GetRunByPublicID(ctx, pid)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if !run.FinalizedAt.Valid {
+		t.Fatal("run was not finalized")
+	}
+	if run.Status != "succeeded" {
+		t.Fatalf("run status = %q, want succeeded (set with finalize)", run.Status)
+	}
+	if _, err := srv.pool.Exec(ctx, "UPDATE runs SET heartbeat_at = now() - interval '10 minutes' WHERE id = $1", run.ID); err != nil {
+		t.Fatalf("age heartbeat: %v", err)
+	}
+	ids, err := srv.q.RequeueExpiredRuns(ctx, 30)
+	if err != nil {
+		t.Fatalf("requeue expired: %v", err)
+	}
+	for _, id := range ids {
+		if id == run.ID {
+			t.Fatalf("finalized run %s was requeued", runID)
+		}
+	}
+	if code, b := do(t, owner, "GET", ts.URL+"/v1/operations/"+operation, "", nil); code != http.StatusOK || !strings.Contains(string(b), runID) {
+		t.Fatalf("operation detail after requeue check: %d %s", code, b)
+	}
+}
+
+func TestFinalizedRunAllowsStatusBlocksCancelAndHeartbeat(t *testing.T) {
+	ts := newTestServer(t)
+	owner := signup(t, ts, "finalized-status")
+	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Finalized Status"})
+	fq := field(t, fb, "id")
+	_, tb := do(t, owner, "POST", ts.URL+"/v1/enrollment-codes", "", map[string]any{"fleet_id": fq, "name": "r"})
+	_, eb := do(t, &http.Client{}, "POST", ts.URL+"/v1/rovers", field(t, tb, "code"), map[string]any{"name": "r", "auto_tags": []string{"pilot:claude"}})
+	rover := field(t, eb, "token")
+	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
+	do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{
+		"fleet_id": fq, "title": "t", "mission_id": field(t, mb, "id"), "assignee_type": "pilot", "assignee_id": "claude",
+	})
+
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, accept)
+	}
+	runID := field(t, accept, "id")
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "succeeded", "message": "done"}); code != http.StatusNoContent {
+		t.Fatalf("result: %d %s", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+runID+"/result", rover, map[string]any{"status": "failed", "message": "again"}); code != http.StatusConflict {
+		t.Fatalf("second result = %d, want 409 (%s)", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+runID+"/heartbeat", rover, nil); code != http.StatusNotFound && code != http.StatusConflict {
+		t.Fatalf("heartbeat after finalize = %d, want 404/409 (%s)", code, b)
+	}
+	if code, b := do(t, owner, "PATCH", ts.URL+"/v1/runs/"+runID, "", map[string]string{"status": "canceled"}); code != http.StatusConflict {
+		t.Fatalf("cancel after finalize = %d, want 409 (%s)", code, b)
+	}
+	if code, b := do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+runID, rover, map[string]string{"status": "failed"}); code != http.StatusConflict && code != http.StatusNotFound {
+		t.Fatalf("status after finalize = %d, want 409/404 (%s)", code, b)
+	}
+}
+
 func TestQueuedCommentCanEditAndDelete(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "queued-comment")
@@ -1257,8 +1410,8 @@ func TestQueuedCommentCanEditAndDelete(t *testing.T) {
 	_, mb := do(t, owner, "POST", ts.URL+"/v1/missions", "", map[string]string{"fleet_id": fq, "name": "M", "key": "M"})
 	_, ob := do(t, owner, "POST", ts.URL+"/v1/operations", "", map[string]any{"fleet_id": fq, "title": "t", "mission_id": field(t, mb, "id"), "assignee_type": "pilot", "assignee_id": "claude"})
 	operation := field(t, ob, "id")
-	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil); code != http.StatusOK {
-		t.Fatalf("claim: %d %s", code, b)
+	if code, b := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil); code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, b)
 	}
 
 	code, cb := postOperationComment(t, owner, ts.URL, operation, "first")
@@ -1291,23 +1444,22 @@ func TestMultipleQueuedCommentsResumeTogether(t *testing.T) {
 	})
 	operation := field(t, ob, "id")
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim first run: %d %s", code, claim)
+		t.Fatalf("accept first run: %d %s", code, accept)
 	}
-	run := field(t, claim, "id")
+	run := field(t, accept, "id")
 	for _, body := range []string{"first queued", "second queued"} {
 		if code, b := postOperationComment(t, owner, ts.URL, operation, body); code != http.StatusCreated {
 			t.Fatalf("queued comment %q: %d %s", body, code, b)
 		}
 	}
 
-	do(t, &http.Client{}, "PUT", ts.URL+"/v1/runs/"+run+"/result", rover, map[string]any{"message": "done", "session_id": "s1"})
-	do(t, &http.Client{}, "PATCH", ts.URL+"/v1/runs/"+run, rover, map[string]string{"state": "succeeded"})
+	do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/"+run+"/result", rover, map[string]any{"status": "succeeded", "message": "done", "session_id": "s1"})
 
-	code, next := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, next := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim queued resume: %d %s", code, next)
+		t.Fatalf("accept queued resume: %d %s", code, next)
 	}
 	prompt := field(t, next, "prompt")
 	for _, want := range []string{"Queued human replies:", "1. first queued", "2. second queued"} {
@@ -1371,19 +1523,19 @@ func TestReassignDispatchesPilotRun(t *testing.T) {
 		t.Fatalf("status after reassign = %q, want in_progress", status)
 	}
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim after reassign = %d, want 200 (%s)", code, claim)
+		t.Fatalf("accept after reassign = %d, want 200 (%s)", code, accept)
 	}
-	if pilot := field(t, claim, "pilot"); pilot != "claude" {
+	if pilot := field(t, accept, "pilot"); pilot != "claude" {
 		t.Fatalf("pilot = %q, want claude", pilot)
 	}
-	if got := field(t, claim, "operation_id"); got != op {
-		t.Fatalf("claimed operation = %q, want %q", got, op)
+	if got := field(t, accept, "operation_id"); got != op {
+		t.Fatalf("accepted operation = %q, want %q", got, op)
 	}
 }
 
-func TestRoutinePulseCreatesClaimableOperation(t *testing.T) {
+func TestRoutinePulseCreatesAcceptableOperation(t *testing.T) {
 	ts := newTestServer(t)
 	owner := signup(t, ts, "routine")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Routine"})
@@ -1420,23 +1572,23 @@ func TestRoutinePulseCreatesClaimableOperation(t *testing.T) {
 		t.Fatalf("routine title = %q, want daily check v2", title)
 	}
 
-	code, ob := do(t, owner, "POST", ts.URL+"/v1/routines/"+routine+"/pulse", "", nil)
+	code, ob := do(t, owner, "POST", ts.URL+"/v1/pulses", "", map[string]string{"routine_id": routine})
 	if code != http.StatusCreated {
 		t.Fatalf("pulse routine = %d, want 201 (%s)", code, ob)
 	}
-	if title := field(t, ob, "title"); title != "daily check v2" {
-		t.Fatalf("operation title = %q, want daily check v2", title)
+	if status := field(t, ob, "status"); status != "succeeded" {
+		t.Fatalf("pulse status = %q, want succeeded", status)
 	}
-	if status := field(t, ob, "status"); status != "in_progress" {
-		t.Fatalf("operation status = %q, want in_progress", status)
+	operation := field(t, ob, "operation_id")
+	if operation == "" {
+		t.Fatalf("pulse operation_id is empty: %s", ob)
 	}
-	operation := field(t, ob, "id")
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim routine pulse = %d, want 200 (%s)", code, claim)
+		t.Fatalf("accept routine pulse = %d, want 200 (%s)", code, accept)
 	}
-	if got := field(t, claim, "operation_id"); got != operation {
-		t.Fatalf("claimed operation = %q, want %q", got, operation)
+	if got := field(t, accept, "operation_id"); got != operation {
+		t.Fatalf("accepted operation = %q, want %q", got, operation)
 	}
 	_, list := do(t, owner, "GET", testFleetFilteredURL(ts.URL, fq, "/routines"), "", nil)
 	var routines []map[string]any
@@ -1451,7 +1603,7 @@ func TestRoutinePulseCreatesClaimableOperation(t *testing.T) {
 	}
 }
 
-func TestRoutineSchedulePulseCreatesClaimableOperation(t *testing.T) {
+func TestRoutineSchedulePulseCreatesAcceptableOperation(t *testing.T) {
 	ts, srv := newTestServerWithNotifier(t)
 	owner := signup(t, ts, "cron-routine")
 	_, fb := do(t, owner, "POST", ts.URL+"/v1/fleets", "", map[string]string{"name": "Schedule Routine"})
@@ -1465,7 +1617,7 @@ func TestRoutineSchedulePulseCreatesClaimableOperation(t *testing.T) {
 	code, rb := do(t, owner, "POST", ts.URL+"/v1/routines", "", map[string]any{
 		"fleet_id": fq, "title": "scheduled check", "body": "check it", "mission_id": field(t, mb, "id"),
 		"metadata": map[string]any{
-			"trigger":   map[string]any{"type": "schedule", "cron": "@hourly"},
+			"trigger":   map[string]any{"kind": "schedule", "cron": "@hourly"},
 			"operation": map[string]any{"assignee": map[string]any{"type": "pilot", "id": "claude"}},
 		},
 		"operation_metadata": map[string]any{"context": "remember fleet context"},
@@ -1476,7 +1628,7 @@ func TestRoutineSchedulePulseCreatesClaimableOperation(t *testing.T) {
 	routine := field(t, rb, "id")
 
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv("UFO_HUB_TEST_DATABASE_URL"))
+	conn, err := pgx.Connect(ctx, database.HubTestURL())
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -1488,11 +1640,11 @@ func TestRoutineSchedulePulseCreatesClaimableOperation(t *testing.T) {
 		t.Fatalf("pulse due routines: %v", err)
 	}
 
-	code, claim := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", rover, nil)
+	code, accept := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", rover, nil)
 	if code != http.StatusOK {
-		t.Fatalf("claim scheduled routine pulse = %d, want 200 (%s)", code, claim)
+		t.Fatalf("accept scheduled routine pulse = %d, want 200 (%s)", code, accept)
 	}
-	prompt := field(t, claim, "prompt")
+	prompt := field(t, accept, "prompt")
 	if !strings.Contains(prompt, "Context:\nremember fleet context") {
 		t.Fatalf("scheduled routine prompt missing context: %q", prompt)
 	}
@@ -1869,9 +2021,9 @@ func TestRoverConnectionRequiresSupportedVersion(t *testing.T) {
 	roverID := field(t, eb, "id")
 
 	srv.minRoverVersion = "9.0.0"
-	code, body := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/claim", roverToken, nil)
+	code, body := do(t, &http.Client{}, "POST", ts.URL+"/v1/runs/accept", roverToken, nil)
 	if code != http.StatusUpgradeRequired {
-		t.Fatalf("claim with unsupported rover version = %d, want 426 (%s)", code, body)
+		t.Fatalf("accept with unsupported rover version = %d, want 426 (%s)", code, body)
 	}
 	code, body = do(t, &http.Client{}, "GET", ts.URL+"/v1/rovers/"+roverID, roverToken, nil)
 	if code != http.StatusUpgradeRequired {

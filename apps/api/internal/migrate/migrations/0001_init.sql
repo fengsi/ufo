@@ -179,6 +179,21 @@ CREATE TABLE routines (
     last_pulsed_at      timestamptz
 );
 
+-- One firing of a routine (cf. runs for operations).
+CREATE TABLE pulses (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id      uuid NOT NULL DEFAULT gen_random_uuid(),
+    fleet_id       bigint NOT NULL,
+    routine_id     bigint NOT NULL,
+    operation_id   bigint,
+    status         text NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'succeeded', 'skipped', 'failed')),
+    metadata       jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    finished_at    timestamptz
+);
+
 -- An operation is a unit of work. assignee is polymorphic (user/pilot/crew,
 -- no FK). Dispatch matches a rover whose tags satisfy required_tags (subset) and
 -- avoid excluded_tags (no overlap). pilot_session_rover_id pins resumable pilot sessions.
@@ -192,7 +207,7 @@ CREATE TABLE operations (
     title                  text NOT NULL,
     body                   text NOT NULL DEFAULT '',
     status                 text NOT NULL DEFAULT 'backlog'
-                           CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled')),
+                           CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'canceled')),
     priority               smallint NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4), -- 0 none .. 4 urgent
     assignee_type          text,
     assignee_id            bigint,
@@ -248,8 +263,8 @@ CREATE TABLE source_actions (
     run_id          bigint,
     rover_id        bigint,
     kind            text NOT NULL CHECK (kind IN ('apply_to_source', 'create_source_branch', 'refresh_from_source')),
-    state           text NOT NULL DEFAULT 'queued'
-                    CHECK (state IN ('queued', 'claimed', 'succeeded', 'failed', 'conflicted')),
+    status          text NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued', 'accepted', 'succeeded', 'failed', 'conflicted')),
     branch_name     text NOT NULL DEFAULT '',
     commit_sha      text NOT NULL DEFAULT '',
     base_sha        text NOT NULL DEFAULT '',
@@ -259,7 +274,7 @@ CREATE TABLE source_actions (
     created_by      bigint,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now(),
-    claimed_at      timestamptz,
+    accepted_at     timestamptz,
     finished_at     timestamptz
 );
 
@@ -269,7 +284,7 @@ CREATE TABLE pull_requests (
     operation_id bigint NOT NULL,
     url          text NOT NULL,
     title        text NOT NULL DEFAULT '',
-    state        text NOT NULL DEFAULT 'open',
+    status        text NOT NULL DEFAULT 'open',
     number       integer,
     metadata     jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
     created_by   bigint,
@@ -315,7 +330,7 @@ CREATE TABLE assets (
     byte_size           bigint NOT NULL DEFAULT 0 CHECK (byte_size >= 0),
     checksums           jsonb CHECK (checksums IS NULL OR jsonb_typeof(checksums) = 'object'),
     storage_backend     text NOT NULL DEFAULT 'local',
-    state               text NOT NULL DEFAULT 'ready' CHECK (state IN ('pending', 'ready', 'deleted')),
+    status               text NOT NULL DEFAULT 'ready' CHECK (status IN ('pending', 'ready', 'deleted')),
     metadata            jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
     created_by          bigint,
     created_at          timestamptz NOT NULL DEFAULT now(),
@@ -341,7 +356,7 @@ CREATE TABLE runs (
     required_rover_id bigint,
     pilot             text NOT NULL DEFAULT 'claude',
     command           text NOT NULL DEFAULT '',
-    state             text NOT NULL DEFAULT 'queued',
+    status            text NOT NULL DEFAULT 'queued',
     session_id        text,
     needs_input       boolean NOT NULL DEFAULT FALSE,
     requested_status  text NOT NULL DEFAULT '',
@@ -349,7 +364,8 @@ CREATE TABLE runs (
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
     heartbeat_at      timestamptz,
-    CONSTRAINT runs_state_check CHECK (state IN ('queued', 'claimed', 'starting', 'running', 'blocked', 'succeeded', 'failed', 'canceled'))
+    finalized_at      timestamptz,
+    CONSTRAINT runs_status_check CHECK (status IN ('queued', 'accepted', 'starting', 'running', 'blocked', 'succeeded', 'failed', 'canceled'))
 );
 
 CREATE TABLE run_events (
@@ -433,6 +449,10 @@ CREATE UNIQUE INDEX labels_public_id_idx ON labels (public_id);
 CREATE INDEX routines_fleet_idx ON routines (fleet_id, id DESC);
 CREATE INDEX routines_due_idx ON routines (next_pulse_at, id) WHERE next_pulse_at IS NOT NULL;
 CREATE UNIQUE INDEX routines_public_id_idx ON routines (public_id);
+CREATE INDEX pulses_fleet_idx ON pulses (fleet_id, id DESC);
+CREATE INDEX pulses_routine_idx ON pulses (routine_id, id DESC);
+CREATE INDEX pulses_operation_idx ON pulses (operation_id) WHERE operation_id IS NOT NULL;
+CREATE UNIQUE INDEX pulses_public_id_idx ON pulses (public_id);
 
 CREATE INDEX operations_fleet_idx ON operations (fleet_id);
 CREATE INDEX operations_board_idx ON operations (fleet_id, status, id DESC);
@@ -446,11 +466,11 @@ CREATE INDEX operations_excluded_tags_idx ON operations USING gin (excluded_tags
 CREATE UNIQUE INDEX operation_relations_public_id_idx ON operation_relations (public_id);
 CREATE INDEX operation_relations_source_idx ON operation_relations (source_id);
 CREATE INDEX operation_relations_target_idx ON operation_relations (target_id);
-CREATE INDEX source_actions_rover_queue_idx ON source_actions (fleet_id, rover_id, state, id);
+CREATE INDEX source_actions_rover_queue_idx ON source_actions (fleet_id, rover_id, status, id);
 CREATE INDEX source_actions_operation_idx ON source_actions (operation_id, id DESC);
 CREATE UNIQUE INDEX source_actions_public_id_idx ON source_actions (public_id);
 CREATE UNIQUE INDEX source_actions_one_active_idx ON source_actions (operation_id)
-    WHERE state IN ('queued', 'claimed');
+    WHERE status IN ('queued', 'accepted');
 CREATE INDEX pull_requests_operation_idx ON pull_requests (operation_id);
 CREATE UNIQUE INDEX pull_requests_public_id_idx ON pull_requests (public_id);
 CREATE INDEX comments_operation_idx ON comments (operation_id, id);
@@ -459,13 +479,13 @@ CREATE INDEX reactions_target_idx ON reactions (target_type, target_id);
 CREATE INDEX assets_fleet_idx ON assets (fleet_id, id DESC) WHERE fleet_id IS NOT NULL;
 CREATE INDEX assets_user_owner_idx ON assets (created_by, id DESC) WHERE fleet_id IS NULL;
 CREATE INDEX assets_operation_idx ON assets (fleet_id, (metadata->>'operation_id'), id)
-    WHERE fleet_id IS NOT NULL AND state = 'ready' AND deleted_at IS NULL AND metadata ? 'operation_id';
+    WHERE fleet_id IS NOT NULL AND status = 'ready' AND deleted_at IS NULL AND metadata ? 'operation_id';
 CREATE UNIQUE INDEX assets_public_id_idx ON assets (public_id);
 
-CREATE INDEX runs_fleet_state_idx ON runs (fleet_id, state);
+CREATE INDEX runs_fleet_state_idx ON runs (fleet_id, status);
 CREATE UNIQUE INDEX runs_public_id_idx ON runs (public_id);
 CREATE UNIQUE INDEX runs_one_active_per_operation_idx ON runs (operation_id)
-WHERE state IN ('queued', 'claimed', 'starting', 'running');
+WHERE status IN ('queued', 'accepted', 'starting', 'running');
 CREATE INDEX run_events_run_idx ON run_events (run_id, id);
 CREATE INDEX run_messages_run_sequence_idx ON run_messages (run_id, sequence);
 CREATE INDEX artifacts_asset_idx ON artifacts (asset_id) WHERE asset_id IS NOT NULL;
@@ -496,6 +516,10 @@ ALTER TABLE labels ADD CONSTRAINT labels_fleet_id_fkey FOREIGN KEY (fleet_id) RE
 ALTER TABLE routines ADD CONSTRAINT routines_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE routines ADD CONSTRAINT routines_mission_id_fkey FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE RESTRICT;
 ALTER TABLE routines ADD CONSTRAINT routines_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
+
+ALTER TABLE pulses ADD CONSTRAINT pulses_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
+ALTER TABLE pulses ADD CONSTRAINT pulses_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES routines (id) ON DELETE CASCADE;
+ALTER TABLE pulses ADD CONSTRAINT pulses_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES operations (id) ON DELETE SET NULL;
 
 ALTER TABLE operations ADD CONSTRAINT operations_fleet_id_fkey FOREIGN KEY (fleet_id) REFERENCES fleets (id) ON DELETE CASCADE;
 ALTER TABLE operations ADD CONSTRAINT operations_mission_id_fkey FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE RESTRICT;
@@ -637,7 +661,7 @@ $$;
 
 CREATE FUNCTION ufo_notify_run_queued() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF new.state = 'queued' THEN
+    IF new.status = 'queued' THEN
         PERFORM pg_notify('ufo_run_queued', new.fleet_id::text);
     END IF;
     RETURN new;
@@ -647,6 +671,13 @@ $$;
 CREATE FUNCTION ufo_notify_signal_changed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM pg_notify('ufo_changed', json_build_object('t', 'signal', 'fleet', new.fleet_id)::text);
+    RETURN new;
+END;
+$$;
+
+CREATE FUNCTION ufo_notify_pulse_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('ufo_changed', json_build_object('t', 'pulse', 'fleet', new.fleet_id)::text);
     RETURN new;
 END;
 $$;
@@ -706,6 +737,11 @@ CREATE TRIGGER routines_updated_at_trigger
     ON routines
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
+CREATE TRIGGER pulses_updated_at_trigger
+    BEFORE UPDATE OF operation_id, status, metadata, finished_at
+    ON pulses
+    FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
+
 CREATE TRIGGER operations_updated_at_trigger
     BEFORE UPDATE OF title, body, status, priority, assignee_type, assignee_id, assignee_pilot_kind, required_tags, excluded_tags, start_date, due_date, pilot_session_id, pilot_session_kind, pilot_session_rover_id, orchestrating, archived, metadata, main_operation_id
     ON operations
@@ -717,22 +753,22 @@ CREATE TRIGGER comments_updated_at_trigger
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
 CREATE TRIGGER runs_updated_at_trigger
-    BEFORE UPDATE OF rover_id, required_rover_id, command, state, session_id, needs_input, requested_status, metadata
+    BEFORE UPDATE OF rover_id, required_rover_id, command, status, session_id, needs_input, requested_status, metadata
     ON runs
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
 CREATE TRIGGER source_actions_updated_at_trigger
-    BEFORE UPDATE OF state, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, claimed_at, finished_at
+    BEFORE UPDATE OF status, branch_name, commit_sha, base_sha, source_head_sha, message, metadata, accepted_at, finished_at
     ON source_actions
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
 CREATE TRIGGER pull_requests_updated_at_trigger
-    BEFORE UPDATE OF title, state, number, metadata
+    BEFORE UPDATE OF title, status, number, metadata
     ON pull_requests
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
 CREATE TRIGGER assets_updated_at_trigger
-    BEFORE UPDATE OF filename, content_type, byte_size, checksums, storage_backend, state, metadata, deleted_at
+    BEFORE UPDATE OF filename, content_type, byte_size, checksums, storage_backend, status, metadata, deleted_at
     ON assets
     FOR EACH ROW EXECUTE FUNCTION ufo_set_updated_at();
 
@@ -777,17 +813,17 @@ CREATE TRIGGER source_actions_changed_trigger
     FOR EACH ROW EXECUTE FUNCTION ufo_notify_operation_changed();
 
 CREATE TRIGGER runs_changed_trigger
-    AFTER INSERT OR UPDATE OF state
+    AFTER INSERT OR UPDATE OF status
     ON runs
     FOR EACH ROW EXECUTE FUNCTION ufo_notify_changed();
 
 CREATE TRIGGER run_queued_trigger
-    AFTER INSERT OR UPDATE OF state
+    AFTER INSERT OR UPDATE OF status
     ON runs
     FOR EACH ROW EXECUTE FUNCTION ufo_notify_run_queued();
 
 CREATE TRIGGER source_action_queued_trigger
-    AFTER INSERT OR UPDATE OF state
+    AFTER INSERT OR UPDATE OF status
     ON source_actions
     FOR EACH ROW EXECUTE FUNCTION ufo_notify_run_queued();
 
@@ -820,3 +856,8 @@ CREATE TRIGGER signals_changed_trigger
     AFTER INSERT OR UPDATE
     ON signals
     FOR EACH ROW EXECUTE FUNCTION ufo_notify_signal_changed();
+
+CREATE TRIGGER pulses_changed_trigger
+    AFTER INSERT OR UPDATE
+    ON pulses
+    FOR EACH ROW EXECUTE FUNCTION ufo_notify_pulse_changed();

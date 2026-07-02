@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	// runQueuedChannel wakes long-poll claim requests (rover assignment).
+	// runQueuedChannel wakes long-poll accept requests (rover assignment).
 	runQueuedChannel = "ufo_run_queued"
 	// changedChannel wakes live UI streams on visible changes.
 	changedChannel = "ufo_changed"
@@ -24,7 +24,7 @@ type Notification struct {
 
 // Notifier LISTENs on one or more PostgreSQL channels (one connection per API
 // instance) and fans notifications out to in-process subscribers, each filtered
-// to the channels it cares about. Powers claim long-polling and live UI updates.
+// to the channels it cares about. Powers accept long-polling and live UI updates.
 type Notifier struct {
 	databaseURL string
 	channels    []string
