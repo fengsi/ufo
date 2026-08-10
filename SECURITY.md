@@ -20,9 +20,8 @@ UFO can run generated work on your machines, so the trust boundary matters:
 
 - **A fleet is a trust boundary.** Any member of a fleet can cause **code
   execution on that fleet's connected rovers** by assigning an operation to a
-  pilot. Built-in pilots include Claude Code, Codex, Antigravity, Cursor
-  Agent, GitHub Copilot, Amp Code, OpenCode, OpenClaw, Hermes, Pi, Kimi, Kiro,
-  and CodeBuddy Code; they run unattended with broad local permissions.
+  pilot backed by a [supported AI CLI](apps/rover/README.md#pilots-and-tags).
+  Pilots run unattended with broad local permissions.
   **Only invite people you trust with shell access to your rover hosts.**
 - **Rovers run as the host user.** Pilot-driven commands use the privileges of
   the account that started the rover. Use a dedicated low-privilege user,
@@ -32,9 +31,9 @@ UFO can run generated work on your machines, so the trust boundary matters:
   those worktrees are **not** a security sandbox.
 - **Enrollment codes and connection tokens are bearer credentials.**
   Enrollment codes are shown **once** at creation; the listing only shows a
-  masked prefix. Creating, listing, deleting enrollment codes and deleting
-  rovers require an **owner or admin** role. Treat the values like passwords;
-  revoke from the Rovers panel if leaked.
+  masked prefix. Only an **owner or admin** can create, list, or delete
+  enrollment codes, or delete rovers. Treat the values like passwords; revoke
+  from the Rovers panel if leaked.
 - **Browser-approved enrollment URLs are bearer approvals.** The code is
   carried in the URL fragment so it is not sent to the Hub during login
   redirects; the web app clears the fragment after capturing it. Anyone who

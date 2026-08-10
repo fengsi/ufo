@@ -1,6 +1,6 @@
 {
   "name": "ufo-web",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "private": true,
   "description": "UFO web UI - the operations board (Next.js).",
   "license": "BSD-3-Clause",
@@ -32,15 +32,15 @@
     "@radix-ui/react-tooltip": "^1.2.16",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.30.0",
+    "lucide-react": "^1.31.0",
     "next": "^16.3.0",
     "next-themes": "^0.4.6",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "shiki": "^4.4.2",
-    "sonner": "^2.0.7",
+    "shiki": "^4.4.3",
+    "sonner": "^2.0.8",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

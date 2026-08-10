@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: UFO Hub API
-  version: 0.7.7
+  version: 0.7.8
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -2111,7 +2111,7 @@ components:
       description: Required when authenticating with an enrollment code or rover connection token; ignored for user-authenticated requests.
       schema:
         type: string
-        example: "0.7.7"
+        example: "0.7.8"
 
   responses:
     BadRequest:

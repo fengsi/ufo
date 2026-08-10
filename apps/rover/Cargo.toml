@@ -1,6 +1,6 @@
 [package]
 name = "ufo-cli"
-version = "0.7.7"
+version = "0.7.8"
 edition = "2024"
 description = "UFO local rover CLI - accepts and runs operations on the host."
 readme = "README.md"

@@ -5236,18 +5236,18 @@ const PILOTS: &[Pilot] = &[
         command: copilot_command,
     },
     Pilot {
-        kind: "amp",
-        binary: "amp",
-        probe_args: &["--help"],
-        output: PilotOutput::PlainText,
-        command: amp_command,
-    },
-    Pilot {
         kind: "opencode",
         binary: "opencode",
         probe_args: &[],
         output: PilotOutput::PlainText,
         command: opencode_command,
+    },
+    Pilot {
+        kind: "amp",
+        binary: "amp",
+        probe_args: &["--help"],
+        output: PilotOutput::PlainText,
+        command: amp_command,
     },
     Pilot {
         kind: "openclaw",
@@ -5271,11 +5271,25 @@ const PILOTS: &[Pilot] = &[
         command: pi_command,
     },
     Pilot {
-        kind: "kimi",
-        binary: "kimi",
+        kind: "kilo",
+        binary: "kilo",
+        probe_args: &["--version"],
+        output: PilotOutput::PlainText,
+        command: kilo_command,
+    },
+    Pilot {
+        kind: "mastracode",
+        binary: "mastracode",
         probe_args: &[],
         output: PilotOutput::PlainText,
-        command: kimi_command,
+        command: mastracode_command,
+    },
+    Pilot {
+        kind: "devin",
+        binary: "devin",
+        probe_args: &["--version"],
+        output: PilotOutput::PlainText,
+        command: devin_command,
     },
     Pilot {
         kind: "kiro",
@@ -5283,6 +5297,13 @@ const PILOTS: &[Pilot] = &[
         probe_args: &["chat", "--help"],
         output: PilotOutput::PlainText,
         command: kiro_command,
+    },
+    Pilot {
+        kind: "kimi",
+        binary: "kimi",
+        probe_args: &[],
+        output: PilotOutput::PlainText,
+        command: kimi_command,
     },
     Pilot {
         kind: "codebuddy",
@@ -5371,23 +5392,15 @@ fn claude_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path
 
 fn codex_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
-    if run.session_id.is_empty() {
-        cmd.arg("exec")
-            .arg("-s")
-            .arg("danger-full-access")
-            .arg("--skip-git-repo-check")
-            .arg("--json")
-            .arg(prompt);
-    } else {
-        cmd.arg("exec")
-            .arg("resume")
-            .arg(&run.session_id)
-            .arg("-c")
-            .arg("sandbox_mode=danger-full-access")
-            .arg("--skip-git-repo-check")
-            .arg("--json")
-            .arg(prompt);
+    cmd.arg("exec")
+        .arg("-s")
+        .arg("danger-full-access")
+        .arg("--skip-git-repo-check")
+        .arg("--json");
+    if !run.session_id.is_empty() {
+        cmd.arg("resume").arg(&run.session_id);
     }
+    cmd.arg(prompt);
     cmd.current_dir(cwd).stdin(Stdio::null());
     cmd
 }
@@ -5427,12 +5440,133 @@ fn trae_command(executable: &Path, _run: &AcceptedRun, prompt: &str, cwd: &Path)
     cmd
 }
 
+fn devin_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new(executable);
+    if !run.session_id.is_empty() {
+        cmd.arg("--continue");
+    }
+    cmd.arg("--permission-mode")
+        .arg("dangerous")
+        .arg("--respect-workspace-trust")
+        .arg("false")
+        .arg("--print")
+        .arg(prompt)
+        .current_dir(cwd)
+        .stdin(Stdio::null());
+    cmd
+}
+
+fn kilo_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new(executable);
+    cmd.arg("run").arg("--auto").arg("--dir").arg(cwd);
+    if !run.session_id.is_empty() {
+        cmd.arg("--continue");
+    }
+    cmd.arg(prompt).current_dir(cwd).stdin(Stdio::null());
+    cmd
+}
+
+fn mastracode_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new(executable);
+    if !run.session_id.is_empty() {
+        cmd.arg("--thread").arg(&run.session_id);
+    }
+    cmd.arg("--prompt")
+        .arg(prompt)
+        .arg("--output")
+        .arg("json")
+        .current_dir(cwd)
+        .stdin(Stdio::null());
+    cmd
+}
+
+fn parse_json_result(raw: &str, session_key: &str, message_key: &str) -> (String, String) {
+    let Ok(value) = serde_json::from_str::<Value>(raw.trim()) else {
+        return (String::new(), raw.to_string());
+    };
+    let session = value
+        .get(session_key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let message = value
+        .get(message_key)
+        .and_then(Value::as_str)
+        .unwrap_or(raw)
+        .to_string();
+    (session, message)
+}
+
+fn parse_mastracode_result(raw: &str) -> (String, String) {
+    parse_json_result(raw, "threadId", "text")
+}
+
+fn parse_cursor_result(raw: &str) -> (String, String) {
+    parse_json_result(raw, "session_id", "result")
+}
+
+fn parse_antigravity_result(raw: &str) -> (String, String) {
+    parse_json_result(raw, "conversation_id", "response")
+}
+
+fn parse_grok_result(raw: &str) -> (String, String) {
+    let Ok(value) = serde_json::from_str::<Value>(raw.trim()) else {
+        return (String::new(), raw.to_string());
+    };
+    let session = value
+        .get("sessionId")
+        .or_else(|| value.get("session_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let message = value
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or(raw)
+        .to_string();
+    (session, message)
+}
+
+fn parse_plain_pilot_result(kind: &str, run: &AcceptedRun, message: &str) -> (String, String) {
+    match kind {
+        "openclaw" | "kimi" | "devin" | "kilo" => (operation_session_key(run), message.to_string()),
+        "copilot" => (operation_session_uuid(run), message.to_string()),
+        "mastracode" => parse_mastracode_result(message),
+        "cursor" => parse_cursor_result(message),
+        "antigravity" => parse_antigravity_result(message),
+        "grok" => parse_grok_result(message),
+        "hermes" => parse_hermes_result(run, message),
+        _ => (String::new(), message.to_string()),
+    }
+}
+
+fn buffers_plain_output(kind: &str) -> bool {
+    matches!(kind, "mastracode" | "cursor" | "antigravity" | "grok")
+}
+
+fn hermes_usage_path(run_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("ufo-hermes-{run_id}.json"))
+}
+
+fn parse_hermes_result(run: &AcceptedRun, raw: &str) -> (String, String) {
+    let path = hermes_usage_path(&run.id);
+    let session = fs::read_to_string(&path)
+        .ok()
+        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+        .and_then(|value| {
+            value
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let _ = fs::remove_file(path);
+    (session, raw.to_string())
+}
+
 fn opencode_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
-    cmd.arg("run")
-        .arg("--dangerously-skip-permissions")
-        .arg("--dir")
-        .arg(cwd);
+    cmd.arg("run").arg("--auto").arg("--dir").arg(cwd);
     if !run.session_id.is_empty() {
         cmd.arg("--session").arg(&run.session_id);
     }
@@ -5440,7 +5574,7 @@ fn opencode_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Pa
     cmd
 }
 
-fn openclaw_session_key(run: &AcceptedRun) -> String {
+fn operation_session_key(run: &AcceptedRun) -> String {
     if run.session_id.is_empty() {
         format!("ufo-{}", run.operation_id)
     } else {
@@ -5448,11 +5582,48 @@ fn openclaw_session_key(run: &AcceptedRun) -> String {
     }
 }
 
+fn operation_session_uuid(run: &AcceptedRun) -> String {
+    if !run.session_id.is_empty() {
+        return run.session_id.clone();
+    }
+    use std::hash::{Hash, Hasher};
+    let mut first = std::collections::hash_map::DefaultHasher::new();
+    let mut second = std::collections::hash_map::DefaultHasher::new();
+    run.operation_id.hash(&mut first);
+    1u64.hash(&mut first);
+    run.operation_id.hash(&mut second);
+    2u64.hash(&mut second);
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&first.finish().to_be_bytes());
+    bytes[8..].copy_from_slice(&second.finish().to_be_bytes());
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
 fn openclaw_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("agent")
         .arg("--session-key")
-        .arg(openclaw_session_key(run))
+        .arg(operation_session_key(run))
         .arg("--message")
         .arg(prompt)
         .arg("--local")
@@ -5466,8 +5637,11 @@ fn antigravity_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: 
     if !run.session_id.is_empty() {
         cmd.arg("--conversation").arg(&run.session_id);
     }
-    cmd.arg("-p")
+    cmd.arg("--dangerously-skip-permissions")
+        .arg("-p")
         .arg(prompt)
+        .arg("--output-format")
+        .arg("json")
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd
@@ -5475,12 +5649,12 @@ fn antigravity_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: 
 
 fn copilot_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
-    if !run.session_id.is_empty() {
-        cmd.arg("--session-id").arg(&run.session_id);
-    }
-    cmd.arg("-p")
+    cmd.arg("--session-id")
+        .arg(operation_session_uuid(run))
+        .arg("-p")
         .arg(prompt)
         .arg("--yolo")
+        .arg("--no-ask-user")
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd
@@ -5490,9 +5664,7 @@ fn cursor_agent_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd:
     let mut cmd = Command::new(executable);
     cmd.arg("--print")
         .arg("--output-format")
-        .arg("text")
-        .arg("--model")
-        .arg("auto")
+        .arg("json")
         .arg("--force")
         .arg("--trust");
     if !run.session_id.is_empty() {
@@ -5516,8 +5688,11 @@ fn hermes_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path
     if !run.session_id.is_empty() {
         cmd.arg("--resume").arg(&run.session_id);
     }
-    cmd.arg("-z")
+    cmd.arg("--yolo")
+        .arg("-z")
         .arg(prompt)
+        .arg("--usage-file")
+        .arg(hermes_usage_path(&run.id))
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd
@@ -5526,7 +5701,7 @@ fn hermes_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path
 fn pi_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
-        cmd.arg("--session-id").arg(&run.session_id);
+        cmd.arg("--session").arg(&run.session_id);
     }
     cmd.arg("--approve")
         .arg("--print")
@@ -5539,10 +5714,9 @@ fn pi_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) ->
 fn kimi_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     if !run.session_id.is_empty() {
-        cmd.arg("--session").arg(&run.session_id);
+        cmd.arg("--continue");
     }
-    cmd.arg("--yolo")
-        .arg("--prompt")
+    cmd.arg("-p")
         .arg(prompt)
         .arg("--output-format")
         .arg("text")
@@ -5554,9 +5728,6 @@ fn kimi_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) 
 fn kiro_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) -> Command {
     let mut cmd = Command::new(executable);
     cmd.arg("chat")
-        .arg("--v3")
-        .arg("--agent")
-        .arg("Kiro")
         .arg("--no-interactive")
         .arg("--trust-all-tools")
         .arg("--wrap")
@@ -5574,10 +5745,8 @@ fn grok_command(executable: &Path, run: &AcceptedRun, prompt: &str, cwd: &Path) 
         cmd.arg("--resume").arg(&run.session_id);
     }
     cmd.arg("--always-approve")
-        .arg("--permission-mode")
-        .arg("bypassPermissions")
         .arg("--output-format")
-        .arg("plain")
+        .arg("json")
         .arg("-p")
         .arg(prompt)
         .current_dir(cwd)
@@ -5915,13 +6084,17 @@ async fn execute_run(
                 run_streaming_json(client, hub, token, &run.id, &mut cmd, dashboard).await
             }
             PilotOutput::PlainText => {
-                let (status, message) =
-                    run_streaming(client, hub, token, &run.id, &mut cmd, dashboard).await?;
-                let session = if pilot.kind == "openclaw" {
-                    openclaw_session_key(run)
-                } else {
-                    String::new()
-                };
+                let (status, message) = run_streaming(
+                    client,
+                    hub,
+                    token,
+                    &run.id,
+                    &mut cmd,
+                    dashboard,
+                    !buffers_plain_output(pilot.kind),
+                )
+                .await?;
+                let (session, message) = parse_plain_pilot_result(pilot.kind, run, &message);
                 Ok((status, session, message, json!({})))
             }
         }
@@ -7153,6 +7326,7 @@ async fn run_streaming(
     run_id: &str,
     cmd: &mut Command,
     dashboard: &Option<Dashboard>,
+    live_text: bool,
 ) -> Result<(std::process::ExitStatus, String)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.kill_on_drop(true);
@@ -7190,19 +7364,21 @@ async fn run_streaming(
             message.push('\n');
         }
         message.push_str(&line);
-        post_message(
-            client,
-            hub,
-            token,
-            run_id,
-            &mut sequence,
-            "text",
-            None,
-            Some(&line),
-            None,
-            None,
-        )
-        .await?;
+        if live_text {
+            post_message(
+                client,
+                hub,
+                token,
+                run_id,
+                &mut sequence,
+                "text",
+                None,
+                Some(&line),
+                None,
+                None,
+            )
+            .await?;
+        }
     }
 
     let status = child.wait().await?;

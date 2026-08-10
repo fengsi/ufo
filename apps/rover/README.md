@@ -33,7 +33,7 @@ The installer puts `ufo` in `~/.local/bin` by default. Override with
 `UFO_ROVER_INSTALL_DIR=/usr/local/bin`, or pin a release with:
 
 ```bash
-curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.7 sh
+curl -fsSL https://getufo.dev/install.sh | UFO_ROVER_VERSION=v0.7.8 sh
 ```
 
 Homebrew (macOS, Linux):
@@ -130,13 +130,16 @@ UFO only lets a rover accept work when its tags match the queued operation.
 | Grok Build | `grok` | `pilot:grok` |
 | Cursor Agent | `cursor-agent` | `pilot:cursor` |
 | GitHub Copilot | `copilot` | `pilot:copilot` |
-| Amp Code | `amp` | `pilot:amp` |
 | OpenCode | `opencode` | `pilot:opencode` |
+| Amp Code | `amp` | `pilot:amp` |
 | OpenClaw | `openclaw` | `pilot:openclaw` |
 | Hermes | `hermes` | `pilot:hermes` |
 | Pi | `pi` | `pilot:pi` |
-| Kimi | `kimi` | `pilot:kimi` |
+| Kilo Code | `kilo` | `pilot:kilo` |
+| MastraCode | `mastracode` | `pilot:mastracode` |
+| Devin | `devin` | `pilot:devin` |
 | Kiro | `kiro-cli` | `pilot:kiro` |
+| Kimi | `kimi` | `pilot:kimi` |
 | CodeBuddy Code | `codebuddy` | `pilot:codebuddy` |
 | Qoder | `qodercli` | `pilot:qoder` |
 | Trae | `trae-cli` | `pilot:trae` |

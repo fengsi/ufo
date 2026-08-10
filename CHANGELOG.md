@@ -5,6 +5,17 @@ All notable changes to UFO are recorded here.
 > **Public beta:** before 1.0, contracts may still evolve. Prefer tagged
 > releases; release notes call out anything that needs a careful upgrade.
 
+## [0.7.8] - 2026-08-10
+
+Public beta maintenance release. Rover CLI **0.7.8+**.
+
+### Pilots
+
+- Added Kilo Code, MastraCode, and Devin as built-in pilots.
+- Aligned unattended launch, session resume, and output handling for Codex,
+  Antigravity, Grok Build, Cursor Agent, GitHub Copilot, OpenCode, Hermes, Pi,
+  Kilo Code, MastraCode, Devin, Kiro, and Kimi with their CLI documentation.
+
 ## [0.7.7] - 2026-08-07
 
 Public beta feature release. Adds operation budgets and scoped usage

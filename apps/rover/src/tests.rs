@@ -2410,26 +2410,30 @@ fn truncate_field_keeps_cells_bounded() {
 
 #[test]
 fn pilot_registry_includes_default_pilots() {
-    for kind in [
-        "claude",
-        "codex",
-        "antigravity",
-        "grok",
-        "cursor",
-        "copilot",
-        "amp",
-        "opencode",
-        "openclaw",
-        "hermes",
-        "pi",
-        "kimi",
-        "kiro",
-        "codebuddy",
-        "qoder",
-        "trae",
-    ] {
-        assert!(find_pilot(kind).is_some(), "{kind} pilot missing");
-    }
+    assert_eq!(
+        PILOTS.iter().map(|pilot| pilot.kind).collect::<Vec<_>>(),
+        vec![
+            "claude",
+            "codex",
+            "antigravity",
+            "grok",
+            "cursor",
+            "copilot",
+            "opencode",
+            "amp",
+            "openclaw",
+            "hermes",
+            "pi",
+            "kilo",
+            "mastracode",
+            "devin",
+            "kiro",
+            "kimi",
+            "codebuddy",
+            "qoder",
+            "trae",
+        ]
+    );
     assert!(find_pilot("missing").is_none());
 }
 
@@ -2443,7 +2447,18 @@ fn antigravity_command_uses_print_mode() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    assert_eq!(args, vec!["--conversation", "session", "-p", "do it"]);
+    assert_eq!(
+        args,
+        vec![
+            "--conversation",
+            "session",
+            "--dangerously-skip-permissions",
+            "-p",
+            "do it",
+            "--output-format",
+            "json",
+        ]
+    );
 }
 
 #[test]
@@ -2458,13 +2473,21 @@ fn copilot_command_uses_prompt_mode() {
 
     assert_eq!(
         args,
-        vec!["--session-id", "session", "-p", "do it", "--yolo"]
+        vec![
+            "--session-id",
+            "session",
+            "-p",
+            "do it",
+            "--yolo",
+            "--no-ask-user",
+        ]
     );
 }
 
 #[test]
 fn plain_text_pilots_use_non_interactive_prompt_mode() {
     let run = sample_accepted_run("");
+    let hermes_usage = hermes_usage_path("run").to_string_lossy().into_owned();
 
     for (args, expected) in [
         (
@@ -2473,7 +2496,15 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            vec!["--resume", "session", "-z", "do it"],
+            vec![
+                "--resume",
+                "session",
+                "--yolo",
+                "-z",
+                "do it",
+                "--usage-file",
+                hermes_usage.as_str(),
+            ],
         ),
         (
             cursor_agent_command(Path::new("cursor-agent"), &run, "do it", Path::new("/tmp"))
@@ -2484,9 +2515,7 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
             vec![
                 "--print",
                 "--output-format",
-                "text",
-                "--model",
-                "auto",
+                "json",
                 "--force",
                 "--trust",
                 "--resume",
@@ -2508,7 +2537,7 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            vec!["--session-id", "session", "--approve", "--print", "do it"],
+            vec!["--session", "session", "--approve", "--print", "do it"],
         ),
         (
             kimi_command(Path::new("kimi"), &run, "do it", Path::new("/tmp"))
@@ -2516,15 +2545,7 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            vec![
-                "--session",
-                "session",
-                "--yolo",
-                "--prompt",
-                "do it",
-                "--output-format",
-                "text",
-            ],
+            vec!["--continue", "-p", "do it", "--output-format", "text"],
         ),
         (
             kiro_command(Path::new("kiro-cli"), &run, "do it", Path::new("/tmp"))
@@ -2534,9 +2555,6 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 .collect::<Vec<_>>(),
             vec![
                 "chat",
-                "--v3",
-                "--agent",
-                "Kiro",
                 "--no-interactive",
                 "--trust-all-tools",
                 "--wrap",
@@ -2556,10 +2574,8 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 "--resume",
                 "session",
                 "--always-approve",
-                "--permission-mode",
-                "bypassPermissions",
                 "--output-format",
-                "plain",
+                "json",
                 "-p",
                 "do it",
             ],
@@ -2596,9 +2612,339 @@ fn plain_text_pilots_use_non_interactive_prompt_mode() {
                 .collect::<Vec<_>>(),
             vec!["run", "do it", "--working-dir", "/tmp"],
         ),
+        (
+            devin_command(Path::new("devin"), &run, "do it", Path::new("/tmp"))
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "--continue",
+                "--permission-mode",
+                "dangerous",
+                "--respect-workspace-trust",
+                "false",
+                "--print",
+                "do it",
+            ],
+        ),
+        (
+            kilo_command(Path::new("kilo"), &run, "do it", Path::new("/tmp"))
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["run", "--auto", "--dir", "/tmp", "--continue", "do it"],
+        ),
+        (
+            mastracode_command(Path::new("mastracode"), &run, "do it", Path::new("/tmp"))
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "--thread", "session", "--prompt", "do it", "--output", "json",
+            ],
+        ),
     ] {
         assert_eq!(args, expected);
     }
+}
+
+#[test]
+fn mastracode_first_run_creates_a_thread_instead_of_resuming() {
+    let mut run = sample_accepted_run("mastracode");
+    run.session_id.clear();
+    let args = mastracode_command(Path::new("mastracode"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(args, vec!["--prompt", "do it", "--output", "json"]);
+}
+
+#[test]
+fn mastracode_result_reads_thread_and_text() {
+    assert_eq!(
+        parse_mastracode_result(r#"{"threadId":"th_1","text":"done"}"#),
+        ("th_1".to_string(), "done".to_string())
+    );
+    assert_eq!(
+        parse_mastracode_result("plain"),
+        (String::new(), "plain".to_string())
+    );
+}
+
+#[test]
+fn cursor_result_reads_session_and_text() {
+    assert_eq!(
+        parse_cursor_result(r#"{"session_id":"chat_1","result":"done"}"#),
+        ("chat_1".to_string(), "done".to_string())
+    );
+}
+
+#[test]
+fn antigravity_result_reads_conversation_and_text() {
+    assert_eq!(
+        parse_antigravity_result(r#"{"conversation_id":"conv_1","response":"done"}"#),
+        ("conv_1".to_string(), "done".to_string())
+    );
+}
+
+#[test]
+fn grok_result_reads_session_and_text() {
+    assert_eq!(
+        parse_grok_result(r#"{"sessionId":"abc123","text":"done"}"#),
+        ("abc123".to_string(), "done".to_string())
+    );
+}
+
+#[test]
+fn cwd_continue_pilots_persist_an_operation_session_key() {
+    let mut run = sample_accepted_run("kilo");
+    run.session_id.clear();
+    assert_eq!(
+        parse_plain_pilot_result("kilo", &run, "done"),
+        ("ufo-operation".to_string(), "done".to_string())
+    );
+    assert_eq!(
+        parse_plain_pilot_result("devin", &run, "done"),
+        ("ufo-operation".to_string(), "done".to_string())
+    );
+    assert_eq!(
+        parse_plain_pilot_result("kimi", &run, "done"),
+        ("ufo-operation".to_string(), "done".to_string())
+    );
+}
+
+#[test]
+fn kilo_and_devin_first_runs_do_not_invent_session_flags() {
+    let mut kilo = sample_accepted_run("kilo");
+    kilo.session_id.clear();
+    let kilo_args = kilo_command(Path::new("kilo"), &kilo, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(kilo_args, vec!["run", "--auto", "--dir", "/tmp", "do it"]);
+
+    let mut devin = sample_accepted_run("devin");
+    devin.session_id.clear();
+    let devin_args = devin_command(Path::new("devin"), &devin, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        devin_args,
+        vec![
+            "--permission-mode",
+            "dangerous",
+            "--respect-workspace-trust",
+            "false",
+            "--print",
+            "do it",
+        ]
+    );
+}
+
+#[test]
+fn hermes_result_reads_usage_session() {
+    let mut run = sample_accepted_run("hermes");
+    run.session_id.clear();
+    let path = hermes_usage_path(&run.id);
+    fs::write(&path, r#"{"session_id":"20260225_143052_a1b2c3"}"#).unwrap();
+    assert_eq!(
+        parse_hermes_result(&run, "Paris."),
+        ("20260225_143052_a1b2c3".to_string(), "Paris.".to_string())
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn opencode_command_uses_documented_auto_flag() {
+    let run = sample_accepted_run("opencode");
+    let args = opencode_command(Path::new("opencode"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec![
+            "run",
+            "--auto",
+            "--dir",
+            "/tmp",
+            "--session",
+            "session",
+            "do it"
+        ]
+    );
+}
+
+#[test]
+fn copilot_first_run_mints_a_session_uuid() {
+    let mut run = sample_accepted_run("copilot");
+    run.session_id.clear();
+    let minted = operation_session_uuid(&run);
+    let args = copilot_command(Path::new("copilot"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec![
+            "--session-id",
+            &minted,
+            "-p",
+            "do it",
+            "--yolo",
+            "--no-ask-user",
+        ]
+    );
+    assert_eq!(minted.len(), 36);
+    assert_eq!(minted.chars().filter(|c| *c == '-').count(), 4);
+}
+
+#[test]
+fn kimi_first_run_uses_prompt_mode_without_a_session() {
+    let mut run = sample_accepted_run("kimi");
+    run.session_id.clear();
+    let args = kimi_command(Path::new("kimi"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(args, vec!["-p", "do it", "--output-format", "text"]);
+}
+
+#[test]
+fn grok_first_run_lets_the_cli_create_the_session() {
+    let mut run = sample_accepted_run("grok");
+    run.session_id.clear();
+    let args = grok_command(Path::new("grok"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec!["--always-approve", "--output-format", "json", "-p", "do it"]
+    );
+}
+
+#[test]
+fn kiro_first_run_stays_on_documented_headless_flags() {
+    let mut run = sample_accepted_run("kiro");
+    run.session_id.clear();
+    let args = kiro_command(Path::new("kiro-cli"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec![
+            "chat",
+            "--no-interactive",
+            "--trust-all-tools",
+            "--wrap",
+            "never",
+            "do it",
+        ]
+    );
+}
+
+#[test]
+fn antigravity_first_run_skips_conversation_resume() {
+    let mut run = sample_accepted_run("antigravity");
+    run.session_id.clear();
+    let args = antigravity_command(Path::new("agy"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec![
+            "--dangerously-skip-permissions",
+            "-p",
+            "do it",
+            "--output-format",
+            "json",
+        ]
+    );
+}
+
+#[test]
+fn pi_first_run_does_not_invent_a_session() {
+    let mut run = sample_accepted_run("pi");
+    run.session_id.clear();
+    let args = pi_command(Path::new("pi"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(args, vec!["--approve", "--print", "do it"]);
+}
+
+#[test]
+fn hermes_first_run_writes_usage_and_skips_resume() {
+    let mut run = sample_accepted_run("hermes");
+    run.session_id.clear();
+    let usage = hermes_usage_path("run").to_string_lossy().into_owned();
+    let args = hermes_command(Path::new("hermes"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec!["--yolo", "-z", "do it", "--usage-file", usage.as_str()]
+    );
+}
+
+#[test]
+fn codex_resume_uses_the_same_exec_sandbox_flags() {
+    let run = sample_accepted_run("codex");
+    let resume = codex_command(Path::new("codex"), &run, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let mut first = sample_accepted_run("codex");
+    first.session_id.clear();
+    let start = codex_command(Path::new("codex"), &first, "do it", Path::new("/tmp"))
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        start,
+        vec![
+            "exec",
+            "-s",
+            "danger-full-access",
+            "--skip-git-repo-check",
+            "--json",
+            "do it",
+        ]
+    );
+    assert_eq!(
+        resume,
+        vec![
+            "exec",
+            "-s",
+            "danger-full-access",
+            "--skip-git-repo-check",
+            "--json",
+            "resume",
+            "session",
+            "do it",
+        ]
+    );
 }
 
 #[test]
